@@ -274,6 +274,8 @@ export async function reindexStoredDocument(
     workspaceSlug: string;
     documentName: string;
     useLlm?: boolean;
+    signal?: AbortSignal;
+    onProgress?: (stage: string) => void;
   }
 ): Promise<IndexedDocumentMetadata> {
   const workspaceSlug = slugify(input.workspaceSlug);
@@ -282,29 +284,41 @@ export async function reindexStoredDocument(
   const metadataPath = path.join(paths.metadata, `${documentName}.json`);
   const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as UploadedDocument;
   const markdown = await readFile(metadata.markdownPath, "utf8");
+  input.onProgress?.("Preparing document");
   const ingestion = ingestMarkdown(markdown);
   const indexedMetadata: IndexedDocumentMetadata = {
     ...metadata,
     status: "INDEXED",
     indexedAt: new Date().toISOString(),
-    ingestion
+    ingestion,
+    llmExtractionError: undefined
   };
 
   if (input.useLlm) {
     try {
-      const provider = new OllamaProvider(config.ollamaBaseUrl, config.ollamaLlmModel);
+      input.onProgress?.("Waiting for AI response");
+      const provider = new OllamaProvider(
+        config.ollamaBaseUrl,
+        config.ollamaLlmModel,
+        config.ollamaLlmTimeoutMs
+      );
       const llmExtraction = await provider.generateJson<LLMExtractionResult>(
-        buildEntityExtractionPrompt(ingestion.content)
+        buildEntityExtractionPrompt(ingestion.content),
+        input.signal
       );
       indexedMetadata.llmExtraction = llmExtraction;
       indexedMetadata.summary = llmExtraction.summary;
     } catch (error) {
       indexedMetadata.llmExtractionError =
-        error instanceof Error ? error.message : "Unknown LLM extraction error.";
+        input.signal?.aborted
+          ? "LLM extraction cancelled by user."
+          : error instanceof Error ? error.message : "Unknown LLM extraction error.";
     }
   }
 
+  input.onProgress?.("Saving index");
   await writeFile(metadataPath, `${JSON.stringify(indexedMetadata, null, 2)}\n`, "utf8");
+  input.onProgress?.("Updating entity index");
   await rebuildEntityIndex(config, workspaceSlug);
 
   return indexedMetadata;

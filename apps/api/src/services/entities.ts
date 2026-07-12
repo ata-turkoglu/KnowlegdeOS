@@ -153,6 +153,35 @@ export async function addEntityAlias(
   return entity;
 }
 
+export async function removeEntityAlias(
+  config: ApiConfig,
+  workspaceSlugInput: string,
+  entityId: string,
+  normalizedAlias: string
+) {
+  const index = await readEntityIndex(config, workspaceSlugInput);
+  const entity = index.entities.find((item) => item.id === entityId);
+
+  if (!entity) {
+    throw new HttpError(404, "Entity not found.");
+  }
+
+  const aliasIndex = entity.aliases.findIndex(
+    (alias) => alias.normalizedAlias === normalizedAlias && alias.source === "USER"
+  );
+
+  if (aliasIndex === -1) {
+    throw new HttpError(404, "User alias not found.");
+  }
+
+  entity.aliases.splice(aliasIndex, 1);
+  entity.updatedAt = new Date().toISOString();
+  index.updatedAt = entity.updatedAt;
+  await writeEntityIndex(config, index);
+
+  return entity;
+}
+
 export async function mergeEntities(
   config: ApiConfig,
   workspaceSlugInput: string,

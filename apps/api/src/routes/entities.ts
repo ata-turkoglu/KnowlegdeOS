@@ -6,6 +6,7 @@ import {
   getEntity,
   listEntities,
   mergeEntities,
+  removeEntityAlias,
   rebuildEntityIndex
 } from "../services/entities.js";
 
@@ -91,6 +92,22 @@ export async function registerEntityRoutes(app: FastifyInstance, config: ApiConf
         workspaceSlugFromQuery(request.query),
         request.params.id,
         request.body?.alias ?? ""
+      );
+    } catch (error) {
+      return handleError(reply, error);
+    }
+  });
+
+  app.delete<{
+    Params: { id: string; normalizedAlias: string };
+    Querystring: { workspaceSlug?: string };
+  }>("/api/entities/:id/aliases/:normalizedAlias", async (request, reply) => {
+    try {
+      return await removeEntityAlias(
+        config,
+        workspaceSlugFromQuery(request.query),
+        request.params.id,
+        request.params.normalizedAlias
       );
     } catch (error) {
       return handleError(reply, error);

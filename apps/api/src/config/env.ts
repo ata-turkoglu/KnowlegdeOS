@@ -4,6 +4,7 @@ export type ApiConfig = {
   databaseUrl: string;
   ollamaBaseUrl: string;
   ollamaLlmModel: string;
+  ollamaLlmTimeoutMs: number;
   ollamaEmbeddingModel: string;
   storageRoot: string;
   apiHost: string;
@@ -17,6 +18,7 @@ export function loadConfig(): ApiConfig {
       "postgresql://postgres:postgres@localhost:5432/knowledgeos",
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
     ollamaLlmModel: process.env.OLLAMA_LLM_MODEL ?? "qwen3:8b",
+    ollamaLlmTimeoutMs: Number(process.env.OLLAMA_LLM_TIMEOUT_MS ?? 0),
     ollamaEmbeddingModel:
       process.env.OLLAMA_EMBEDDING_MODEL ?? "bge-m3:latest",
     storageRoot: process.env.STORAGE_ROOT ?? "./storage",

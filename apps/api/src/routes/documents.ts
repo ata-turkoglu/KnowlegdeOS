@@ -9,6 +9,25 @@ import {
   storeUploadedDocument
 } from "../services/documents.js";
 
+type ReindexOperation = {
+  stage: string;
+  status: "running" | "completed" | "cancelled" | "failed";
+  updatedAt: string;
+};
+
+const reindexOperations = new Map<string, ReindexOperation>();
+
+function updateReindexOperation(
+  operationId: string | undefined,
+  update: Pick<ReindexOperation, "stage" | "status">
+) {
+  if (!operationId) {
+    return;
+  }
+
+  reindexOperations.set(operationId, { ...update, updatedAt: new Date().toISOString() });
+}
+
 function fieldValue(field: MultipartValue<unknown> | undefined) {
   return typeof field?.value === "string" ? field.value : undefined;
 }
@@ -26,6 +45,19 @@ function handleError(reply: FastifyReply, error: unknown) {
 }
 
 export async function registerDocumentRoutes(app: FastifyInstance, config: ApiConfig) {
+  app.get<{ Params: { operationId: string } }>(
+    "/api/reindex-operations/:operationId",
+    async (request, reply) => {
+      const operation = reindexOperations.get(request.params.operationId);
+
+      if (!operation) {
+        return reply.code(404).send({ error: "Reindex operation was not found." });
+      }
+
+      return operation;
+    }
+  );
+
   app.get<{ Querystring: { workspaceSlug?: string } }>(
     "/api/documents",
     async (request, reply) => {
@@ -129,16 +161,41 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
   }>(
     "/api/documents/:workspaceSlug/:documentName/reindex",
     async (request, reply) => {
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      const operationId = request.headers["x-reindex-operation-id"];
+      const resolvedOperationId =
+        typeof operationId === "string" && operationId.length > 0 ? operationId : undefined;
+      request.raw.once("aborted", abort);
+      updateReindexOperation(resolvedOperationId, {
+        stage: "Starting reindexing",
+        status: "running"
+      });
+
       try {
         const document = await reindexStoredDocument(config, {
           workspaceSlug: request.params.workspaceSlug,
           documentName: request.params.documentName,
-          useLlm: request.body?.useLlm === true
+          useLlm: request.body?.useLlm === true,
+          signal: controller.signal,
+          onProgress: (stage) =>
+            updateReindexOperation(resolvedOperationId, { stage, status: "running" })
+        });
+
+        updateReindexOperation(resolvedOperationId, {
+          stage: controller.signal.aborted ? "Cancelled" : "Completed",
+          status: controller.signal.aborted ? "cancelled" : "completed"
         });
 
         return reply.send(document);
       } catch (error) {
+        updateReindexOperation(resolvedOperationId, {
+          stage: controller.signal.aborted ? "Cancelled" : "Reindexing failed",
+          status: controller.signal.aborted ? "cancelled" : "failed"
+        });
         return handleError(reply, error);
+      } finally {
+        request.raw.removeListener("aborted", abort);
       }
     }
   );

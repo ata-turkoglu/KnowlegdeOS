@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AButton, ADropdown, AInput } from "../components/ui";
 import { useWorkspace } from "./workspace-context";
+import { useLanguage } from "./language-context";
 
 const apiBaseUrl = "http://127.0.0.1:4000";
 
@@ -32,13 +33,15 @@ type EntityItem = {
 };
 
 export function EntitiesPanel() {
+  const { language } = useLanguage();
+  const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
   const [entities, setEntities] = useState<EntityItem[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState("");
   const [mergeSourceId, setMergeSourceId] = useState("");
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [newAlias, setNewAlias] = useState("");
-  const [message, setMessage] = useState("Yukleniyor...");
+  const [message, setMessage] = useState(isEnglish ? "Loading..." : "Yükleniyor...");
   const [isLoading, setIsLoading] = useState(false);
   const [activeAction, setActiveAction] = useState("");
 
@@ -79,12 +82,12 @@ export function EntitiesPanel() {
     setIsLoading(false);
 
     if (!response.ok) {
-      setMessage(body.error ?? "Entity listesi alinamadi.");
+      setMessage(body.error ?? (isEnglish ? "Entity list could not be loaded." : "Varlık listesi alınamadı."));
       return;
     }
 
     updateEntityState(body);
-    setMessage(`${body.length} entity listelendi.`);
+    setMessage("");
   }
 
   async function rebuildEntities() {
@@ -108,19 +111,19 @@ export function EntitiesPanel() {
     setActiveAction("");
 
     if (!response.ok) {
-      setMessage(body.error ?? "Entity index yenilenemedi.");
+      setMessage(body.error ?? (isEnglish ? "Entity index could not be rebuilt." : "Varlık indeksi yenilenemedi."));
       return;
     }
 
     updateEntityState(body.entities);
-    setMessage(`${body.entities.length} entity yeniden olusturuldu.`);
+    setMessage(isEnglish ? `${body.entities.length} entities rebuilt.` : `${body.entities.length} varlık yeniden oluşturuldu.`);
   }
 
   async function addAlias() {
     const alias = newAlias.trim();
 
     if (!selectedEntity || !alias) {
-      setMessage("Alias ve entity secimi gerekli.");
+      setMessage(isEnglish ? "An alias and an entity must be selected." : "Takma ad ve varlık seçimi gerekli.");
       return;
     }
 
@@ -144,7 +147,7 @@ export function EntitiesPanel() {
     setActiveAction("");
 
     if (!response.ok) {
-      setMessage(body.error ?? "Alias eklenemedi.");
+      setMessage(body.error ?? (isEnglish ? "Alias could not be added." : "Takma ad eklenemedi."));
       return;
     }
 
@@ -153,12 +156,37 @@ export function EntitiesPanel() {
       current.map((entity) => (entity.id === body.id ? body : entity))
     );
     setSelectedEntityId(body.id);
-    setMessage(`${alias} alias olarak eklendi.`);
+    setMessage(isEnglish ? `${alias} was added as an alias.` : `${alias} takma ad olarak eklendi.`);
+  }
+
+  async function removeAlias(alias: EntityAlias) {
+    if (!selectedEntity) {
+      return;
+    }
+
+    setActiveAction(`remove-alias-${alias.normalizedAlias}`);
+    setMessage("");
+
+    const response = await fetch(
+      `${apiBaseUrl}/api/entities/${encodeURIComponent(selectedEntity.id)}/aliases/${encodeURIComponent(alias.normalizedAlias)}?workspaceSlug=${encodeURIComponent(workspaceSlug)}`,
+      { method: "DELETE" }
+    );
+    const body = await response.json();
+
+    setActiveAction("");
+
+    if (!response.ok) {
+      setMessage(body.error ?? (isEnglish ? "Alias could not be removed." : "Takma ad silinemedi."));
+      return;
+    }
+
+    setEntities((current) => current.map((entity) => (entity.id === body.id ? body : entity)));
+    setMessage(isEnglish ? `${alias.alias} was removed.` : `${alias.alias} silindi.`);
   }
 
   async function mergeSelectedEntities() {
     if (!mergeSourceId || !mergeTargetId || mergeSourceId === mergeTargetId) {
-      setMessage("Birlestirmek icin iki farkli entity secilmeli.");
+      setMessage(isEnglish ? "Choose two different entities to merge." : "Birleştirmek için iki farklı varlık seçilmeli.");
       return;
     }
 
@@ -185,13 +213,13 @@ export function EntitiesPanel() {
     setActiveAction("");
 
     if (!response.ok) {
-      setMessage(body.error ?? "Entity merge basarisiz.");
+      setMessage(body.error ?? (isEnglish ? "Entity merge failed." : "Varlık birleştirme başarısız."));
       return;
     }
 
     await loadEntities(workspaceSlug);
     setSelectedEntityId(body.id);
-    setMessage(`${body.canonicalValue} altinda entity merge tamamlandi.`);
+    setMessage(isEnglish ? `Entities merged under ${body.canonicalValue}.` : `Varlıklar ${body.canonicalValue} altında birleştirildi.`);
   }
 
   useEffect(() => {
@@ -200,24 +228,25 @@ export function EntitiesPanel() {
 
   return (
     <section className="panel entities-panel">
-      <div>
-        <p className="eyebrow">Entity yonetimi</p>
-        <h3>Entities</h3>
-      </div>
-
-      <div className="entities-toolbar">
-        <div className="button-row">
-          <AButton type="button" onClick={() => loadEntities()} disabled={isLoading}>
-            {isLoading ? "Yukleniyor..." : "Yenile"}
-          </AButton>
-          <AButton
-            type="button"
-            tone="secondary"
-            onClick={rebuildEntities}
-            disabled={Boolean(activeAction)}
-          >
-            {activeAction === "rebuild" ? "Isleniyor..." : "Rebuild"}
-          </AButton>
+      <div className="entities-header">
+        <div>
+          <p className="eyebrow">{isEnglish ? "Entity management" : "Varlık yönetimi"}</p>
+          <h3>{isEnglish ? "Entities" : "Varliklar"} ({entities.length})</h3>
+        </div>
+        <div className="entities-toolbar">
+          <div className="button-row">
+            <AButton type="button" onClick={() => loadEntities()} disabled={isLoading}>
+              {isLoading ? (isEnglish ? "Loading..." : "Yükleniyor...") : isEnglish ? "Refresh" : "Yenile"}
+            </AButton>
+            <AButton
+              type="button"
+              tone="secondary"
+              onClick={rebuildEntities}
+              disabled={Boolean(activeAction)}
+            >
+              {activeAction === "rebuild" ? (isEnglish ? "Processing..." : "Isleniyor...") : isEnglish ? "Rebuild" : "Yeniden olustur"}
+            </AButton>
+          </div>
         </div>
       </div>
 
@@ -234,7 +263,7 @@ export function EntitiesPanel() {
               <span>{entity.type}</span>
               <strong>{entity.canonicalValue}</strong>
               <small>
-                {entity.aliases.length} alias · {entity.documents.length} belge
+                {entity.aliases.length} {isEnglish ? "aliases" : "takma ad"} · {entity.documents.length} {isEnglish ? "documents" : "belge"}
               </small>
             </AButton>
           ))}
@@ -251,7 +280,7 @@ export function EntitiesPanel() {
               <div className="alias-editor">
                 <AInput
                   value={newAlias}
-                  placeholder="Yeni alias"
+                  placeholder={isEnglish ? "New alias" : "Yeni alias"}
                   onChange={(event) => setNewAlias(event.target.value)}
                 />
                 <AButton
@@ -259,7 +288,7 @@ export function EntitiesPanel() {
                   onClick={addAlias}
                   disabled={activeAction === "alias"}
                 >
-                  {activeAction === "alias" ? "Ekleniyor..." : "Alias ekle"}
+                  {activeAction === "alias" ? (isEnglish ? "Adding..." : "Ekleniyor...") : isEnglish ? "Add alias" : "Alias ekle"}
                 </AButton>
               </div>
 
@@ -267,6 +296,18 @@ export function EntitiesPanel() {
                 {selectedEntity.aliases.map((alias) => (
                   <span key={alias.normalizedAlias}>
                     {alias.alias} · {alias.source}
+                    {alias.source === "USER" ? (
+                      <button
+                        className="alias-delete"
+                        type="button"
+                        onClick={() => void removeAlias(alias)}
+                        disabled={Boolean(activeAction)}
+                        aria-label={isEnglish ? `${alias.alias} aliasını sil` : `${alias.alias} takma adını sil`}
+                        title={isEnglish ? "Remove alias" : "Takma adı sil"}
+                      >
+                        <i className="pi pi-times" aria-hidden="true" />
+                      </button>
+                    ) : null}
                   </span>
                 ))}
               </div>
@@ -276,7 +317,7 @@ export function EntitiesPanel() {
                   <article key={document.documentName}>
                     <strong>{document.documentName}</strong>
                     <span>
-                      {document.title} · {document.occurrenceCount} kayit
+                      {document.title} · {document.occurrenceCount} {isEnglish ? "records" : "kayıt"}
                     </span>
                     <p>{document.evidenceSnippet}</p>
                   </article>
@@ -284,32 +325,32 @@ export function EntitiesPanel() {
               </div>
             </>
           ) : (
-            <p className="empty-state">Bu workspace icinde entity yok.</p>
+            <p className="empty-state">{isEnglish ? "There are no entities in this workspace." : "Bu çalışma alanında varlık yok."}</p>
           )}
         </div>
       </div>
 
       <div className="merge-panel">
         <div>
-          <p className="eyebrow">Merge</p>
-          <strong>Entity birlestirme</strong>
+          <p className="eyebrow">{isEnglish ? "Merge" : "Birlestir"}</p>
+          <strong>{isEnglish ? "Merge entities" : "Varlik birlestirme"}</strong>
         </div>
         <label>
-          Source
+          {isEnglish ? "Source" : "Kaynak"}
           <ADropdown
             value={mergeSourceId}
             options={entityOptions}
             onChange={(event) => setMergeSourceId(event.value)}
-            placeholder="Kaynak entity"
+            placeholder={isEnglish ? "Source entity" : "Kaynak varlık"}
           />
         </label>
         <label>
-          Target
+          {isEnglish ? "Target" : "Hedef"}
           <ADropdown
             value={mergeTargetId}
             options={entityOptions}
             onChange={(event) => setMergeTargetId(event.value)}
-            placeholder="Hedef entity"
+            placeholder={isEnglish ? "Target entity" : "Hedef varlık"}
           />
         </label>
         <AButton
@@ -322,7 +363,7 @@ export function EntitiesPanel() {
             mergeSourceId === mergeTargetId
           }
         >
-          {activeAction === "merge" ? "Birlestiriliyor..." : "Merge"}
+          {activeAction === "merge" ? (isEnglish ? "Merging..." : "Birlestiriliyor...") : isEnglish ? "Merge" : "Birlestir"}
         </AButton>
       </div>
 

@@ -38,6 +38,13 @@ services:
       - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s
@@ -72,6 +79,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/knowledgeos
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:8b}
+      OLLAMA_LLM_TIMEOUT_MS: ${OLLAMA_LLM_TIMEOUT_MS:-0}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}
       STORAGE_ROOT: /app/storage
       API_HOST: 0.0.0.0

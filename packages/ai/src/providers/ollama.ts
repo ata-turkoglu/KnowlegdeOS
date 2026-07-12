@@ -16,9 +16,11 @@ export class OllamaProvider implements LLMProvider {
     private readonly timeoutMs = 60000
   ) {}
 
-  async generate(prompt: string): Promise<string> {
+  async generate(prompt: string, signal?: AbortSignal): Promise<string> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = this.timeoutMs > 0 ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
 
     const response = await fetch(`${this.baseUrl}/api/generate`, {
       method: "POST",
@@ -35,7 +37,12 @@ export class OllamaProvider implements LLMProvider {
           temperature: 0
         }
       })
-    }).finally(() => clearTimeout(timeout));
+    }).finally(() => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      signal?.removeEventListener("abort", abort);
+    });
 
     if (!response.ok) {
       throw new Error(`Ollama generate failed with ${response.status}`);
@@ -45,8 +52,8 @@ export class OllamaProvider implements LLMProvider {
     return body.response ?? "";
   }
 
-  async generateJson<T>(prompt: string): Promise<T> {
-    const text = await this.generate(prompt);
+  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+    const text = await this.generate(prompt, signal);
     return JSON.parse(extractJson(text)) as T;
   }
 }
