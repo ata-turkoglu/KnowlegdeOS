@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { AButton, AInput } from "../components/ui";
+import { Tooltip } from "primereact/tooltip";
+import { AButton, AIcon, AInfo, AInput } from "../components/ui";
 import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
@@ -57,7 +58,7 @@ export function SearchPanel() {
   const { language } = useLanguage();
   const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
-  const [query, setQuery] = useState("Ali Cobanoglu gecen belgeleri ozetle");
+  const [query, setQuery] = useState("");
   const [mode, setMode] = useState<SearchMode>("hybrid");
   const [limit, setLimit] = useState(5);
   const [response, setResponse] = useState<SearchResponse | null>(null);
@@ -103,29 +104,6 @@ export function SearchPanel() {
     setMessage(isEnglish ? `${body.queryType} results loaded.` : `${body.queryType} sonucu yüklendi.`);
   }
 
-  async function rebuildSemanticIndex() {
-    setIsBusy(true);
-    setMessage("");
-
-    const result = await fetch(`${apiBaseUrl}/api/search/semantic/rebuild`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ workspaceSlug })
-    });
-    const body = await result.json();
-
-    setIsBusy(false);
-
-    if (!result.ok) {
-      setMessage(body.error ?? (isEnglish ? "Semantic index could not be rebuilt." : "Semantic indeks yenilenemedi."));
-      return;
-    }
-
-    setMessage(isEnglish ? `Semantic index rebuilt for ${body.chunks.length} document sections.` : `${body.chunks.length} belge bölümü için anlamsal indeks yenilendi.`);
-  }
-
   const documents: SearchDocument[] =
     response?.documents ??
     response?.retrievedDocuments ??
@@ -145,13 +123,29 @@ export function SearchPanel() {
         <h3>{isEnglish ? "Entity, semantic, and hybrid search" : "Varlik, anlamsal ve hibrit arama"}</h3>
       </div>
 
+      <div className="search-workbench">
       <div className="search-form">
         <label>
           {isEnglish ? "Query" : "Sorgu"}
-          <AInput value={query} onChange={(event) => setQuery(event.target.value)} />
+          <AInput
+            value={query}
+            placeholder={isEnglish ? "Search people, places, documents, or topics..." : "Kişi, yer, belge veya konu ara..."}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                void runSearch();
+              }
+            }}
+          />
         </label>
         <label>
-          Limit
+          <span className="label-with-info">
+            Limit
+            <AInfo
+              description={isEnglish ? "The maximum number of best-matching documents and sources to return." : "Aramanın döndüreceği en iyi eşleşen belge ve kaynakların en fazla sayısı."}
+            position="right"
+            />
+          </span>
           <AInput
             min="1"
             max="10"
@@ -169,47 +163,52 @@ export function SearchPanel() {
               key={item}
               type="button"
               tone={mode === item ? "primary" : "secondary"}
-              className={mode === item ? "active" : ""}
+              className={`${mode === item ? "active " : ""}search-mode-${item}`}
               onClick={() => setMode(item)}
             >
               {item}
             </AButton>
           ))}
+          <Tooltip
+            target=".search-mode-entity"
+            content={isEnglish ? "Matches your query against indexed entity names and aliases (people, places, organizations, etc.), then returns the documents where those entities occur. Best for exact names and known terms." : "Sorgunuzu indekslenmiş varlık adları ve takma adlarla (kişi, yer, kurum vb.) eşleştirir; ardından bu varlıkların geçtiği belgeleri getirir. Kesin isimler ve bilinen terimler için en uygunudur."}
+            position="top"
+          />
+          <Tooltip
+            target=".search-mode-semantic"
+            content={isEnglish ? "Converts your query into an embedding and compares it with indexed document-section embeddings. It can find conceptually similar text even when the same words are not used." : "Sorgunuzu bir embedding’e dönüştürür ve belge bölümlerinin indekslenmiş embedding’leriyle karşılaştırır. Aynı kelimeler geçmese bile anlamca yakın metinleri bulabilir."}
+            position="top"
+          />
+          <Tooltip
+            target=".search-mode-hybrid"
+            content={isEnglish ? "Runs entity and semantic search together, combines their document matches, and ranks the result set. Use it when you want both exact entity matches and meaning-based discovery." : "Varlık ve anlamsal aramayı birlikte çalıştırır, belge eşleşmelerini birleştirir ve sonuçları sıralar. Hem kesin varlık eşleşmelerini hem de anlam tabanlı keşfi istediğinizde kullanın."}
+            position="top"
+          />
         </div>
         <AButton type="button" onClick={runSearch} disabled={isBusy}>
+          <i className="pi pi-search" aria-hidden="true" />
           {isBusy ? (isEnglish ? "Searching..." : "Aranıyor...") : isEnglish ? "Search" : "Ara"}
         </AButton>
-        <AButton
-          type="button"
-          tone="secondary"
-          onClick={rebuildSemanticIndex}
-          disabled={isBusy}
-        >
-          {isEnglish ? "Rebuild semantic index" : "Anlamsal indeksi yenile"}
-        </AButton>
+      </div>
       </div>
 
       {response ? (
         <div className="search-result-panel">
-          <div className="result-strip">
-            <span>{isEnglish ? "Query type" : "Sorgu tipi"}</span>
-            <strong>{response.queryType}</strong>
-          </div>
-
           {response.matchedEntity ? (
-            <div className="result-strip">
-              <span>{isEnglish ? "Matched entity" : "Eslesen varlik"}</span>
-              <strong>{response.matchedEntity.canonicalValue}</strong>
+            <div className="search-result-summary">
+              <div className="result-strip">
+                <span>{isEnglish ? "Matched entity" : "Eşleşen varlık"}</span>
+                <strong>{response.matchedEntity.canonicalValue}</strong>
+              </div>
             </div>
           ) : null}
 
-          {response.semantic?.embeddingModel ? (
-            <div className="result-strip">
-              <span>Embedding</span>
-              <strong>{response.semantic.embeddingModel}</strong>
+          <div className="search-results-grid">
+          <section className="search-result-section">
+            <div className="search-section-heading">
+              <h4><i className="pi pi-file" aria-hidden="true" /> {isEnglish ? "Results" : "Sonuçlar"}</h4>
+              <span>{documents.length}</span>
             </div>
-          ) : null}
-
           <div className="search-documents">
             {documents.map((document, index) => (
               <article key={`${document.documentName}-${index}`}>
@@ -218,28 +217,60 @@ export function SearchPanel() {
                   <span>{document.title}</span>
                 </div>
                 <div className="document-stats">
-                  {document.entityMatched ? <span>ENTITY</span> : null}
+                  {document.entityMatched ? (
+                    <AIcon
+                      icon={<i className="pi pi-equals" />}
+                      tooltip={isEnglish ? "Entity match" : "Varlık eşleşmesi"}
+                    />
+                  ) : null}
                   {typeof document.semanticScore === "number" ? (
-                    <span>{document.semanticScore.toFixed(3)}</span>
+                    <>
+                      <AIcon
+                        icon={<i className="pi pi-sparkles" />}
+                        tooltip={isEnglish ? "Semantic match" : "Anlamsal eşleşme"}
+                      />
+                      <AIcon
+                        icon={<i className="pi pi-chart-line" />}
+                        tooltip={`${isEnglish ? "Semantic score" : "Anlamsal skor"}: ${document.semanticScore.toFixed(3)}`}
+                      />
+                    </>
                   ) : null}
                 </div>
                 <p>{document.evidenceSnippet}</p>
               </article>
             ))}
           </div>
+          </section>
 
-          <div className="source-list">
+          <section className="search-result-section">
+            <div className="search-section-heading">
+              <h4><i className="pi pi-link" aria-hidden="true" /> {isEnglish ? "Sources" : "Kaynaklar"}</h4>
+              <span>{response.sources.length}</span>
+            </div>
+          <div className="source-list search-source-list">
             {response.sources.map((source, index) => (
               <article key={`${source.documentName}-${source.sourceType ?? "source"}-${index}`}>
                 <strong>{source.documentName}</strong>
-                <span>
-                  {source.title}
-                  {source.sourceType ? ` · ${source.sourceType}` : ""}
-                  {typeof source.score === "number" ? ` · ${source.score.toFixed(3)}` : ""}
-                </span>
+                <span>{source.title}</span>
+                <div className="document-stats">
+                  {source.sourceType ? (
+                    <AIcon
+                      icon={<i className={source.sourceType === "ENTITY" ? "pi pi-equals" : "pi pi-sparkles"} />}
+                      tooltip={source.sourceType === "ENTITY" ? (isEnglish ? "Entity match" : "Varlık eşleşmesi") : (isEnglish ? "Semantic match" : "Anlamsal eşleşme")}
+                    />
+                  ) : null}
+                  {typeof source.score === "number" ? (
+                    <AIcon
+                      icon={<i className="pi pi-chart-line" />}
+                      tooltip={`${isEnglish ? "Semantic score" : "Anlamsal skor"}: ${source.score.toFixed(3)}`}
+                    />
+                  ) : null}
+                </div>
                 <p>{source.evidenceSnippet}</p>
               </article>
             ))}
+          </div>
+          </section>
           </div>
         </div>
       ) : null}

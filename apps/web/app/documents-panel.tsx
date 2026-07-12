@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Tooltip } from "primereact/tooltip";
 import { AButton, ADialog, AIcon } from "../components/ui";
 import { useWorkspace } from "./workspace-context";
 import { useLanguage } from "./language-context";
@@ -182,7 +183,6 @@ export function DocumentsPanel() {
     }
 
     setSelectedDocument(body);
-    setMessage(isEnglish ? `${documentName} details loaded.` : `${documentName} detayı yüklendi.`);
   }
 
   async function reindexDocument(documentName: string, useLlm: boolean) {
@@ -292,7 +292,10 @@ export function DocumentsPanel() {
       <div className="documents-layout">
         <div className="document-list">
           {documents.map((document) => (
-            <article key={document.documentName} className="document-row">
+            <article
+              key={document.documentName}
+              className={selectedDocument?.documentName === document.documentName ? "document-row is-selected" : "document-row"}
+            >
               <div className="document-row-heading">
                 <div>
                   <strong>{document.filename}</strong>
@@ -312,7 +315,7 @@ export function DocumentsPanel() {
                   <span><AIcon icon={<i className="pi pi-check-circle" />} tooltip={document.status} /></span>
                   <span><AIcon icon={<i className="pi pi-align-left" />} tooltip={`${document.chunkCount} ${isEnglish ? "document sections" : "belge bölümü"}`} /></span>
                   <span><AIcon icon={<i className="pi pi-tags" />} tooltip={`${document.entityCount} ${isEnglish ? "entities" : "varlık"}`} /></span>
-                  <span><AIcon icon={<i className={`pi ${document.hasLlmExtraction ? "pi-sparkles" : "pi-sliders-h"}`} />} tooltip={document.hasLlmExtraction ? "LLM" : "Deterministic"} /></span>
+                  <span><AIcon icon={<i className={`pi ${document.hasLlmExtraction ? "pi-sparkles" : "pi-equals"}`} />} tooltip={document.hasLlmExtraction ? "LLM" : isEnglish ? "Rule-based" : "Kural tabanlı"} /></span>
                   {document.llmExtractionError ? (
                     <span>
                       <AIcon
@@ -340,14 +343,44 @@ export function DocumentsPanel() {
                     </div>
                   ) : (
                     <>
-                      <AButton type="button" tone="secondary" onClick={() => loadDocumentDetail(document.documentName)} disabled={Boolean(activeDocument)}>
-                        {isEnglish ? "Details" : "Detay"}
+                      <AButton
+                        className={`document-index-tooltip-${document.documentName}`}
+                        type="button"
+                        tone="secondary"
+                        onClick={() => reindexDocument(document.documentName, false)}
+                        disabled={Boolean(activeDocument)}
+                      >
+                        {isEnglish ? "Index" : "İndeksle"}
                       </AButton>
-                      <AButton type="button" tone="secondary" onClick={() => reindexDocument(document.documentName, false)} disabled={Boolean(activeDocument)}>
-                        {isEnglish ? "Reindex" : "Yeniden indeksle"}
-                      </AButton>
-                      <AButton type="button" onClick={() => reindexDocument(document.documentName, true)} disabled={Boolean(activeDocument)}>
+                      <AButton
+                        className={`document-llm-tooltip-${document.documentName}`}
+                        type="button"
+                        tone="secondary"
+                        onClick={() => reindexDocument(document.documentName, true)}
+                        disabled={Boolean(activeDocument)}
+                      >
                         LLM
+                      </AButton>
+                      <Tooltip
+                        target={`.document-index-tooltip-${document.documentName}`}
+                        content={isEnglish ? "Rebuilds the document index with rule-based extraction." : "Belge indeksini kural tabanlı çıkarımla yeniden oluşturur."}
+                        position="top"
+                      />
+                      <Tooltip
+                        target={`.document-llm-tooltip-${document.documentName}`}
+                        content={isEnglish ? "Uses AI to create a document summary and extract additional entities." : "Belge özeti ve ek varlıklar oluşturmak için yapay zekâ kullanır."}
+                        position="top"
+                      />
+                      <AButton
+                        className="document-detail-trigger"
+                        type="button"
+                        tone="secondary"
+                        onClick={() => loadDocumentDetail(document.documentName)}
+                        disabled={Boolean(activeDocument)}
+                        aria-label={isEnglish ? "Open document details" : "Belge detayını aç"}
+                        title={isEnglish ? "Open document details" : "Belge detayını aç"}
+                      >
+                        <i className="pi pi-arrow-right" aria-hidden="true" />
                       </AButton>
                     </>
                   )}
@@ -413,9 +446,20 @@ export function DocumentsPanel() {
                 {selectedDocument.entities.map((entity, index) => (
                   <article key={`${entity.type}-${entity.value}-${index}`}>
                     <strong>{entity.value}</strong>
-                    <span>
-                      {entityTypeLabels[entity.type] ?? entity.type} · {entitySourceLabels[entity.source] ?? entity.source} · {formatEntityConfidence(entity.confidence)} {isEnglish ? "confidence" : "güven"}
-                    </span>
+                    <div className="detail-entity-meta">
+                      <AIcon
+                        icon={<i className="pi pi-tags" />}
+                        tooltip={`${isEnglish ? "Type" : "Tür"}: ${entityTypeLabels[entity.type] ?? entity.type}`}
+                      />
+                      <AIcon
+                        icon={<i className={`pi ${entity.source === "LLM" ? "pi-sparkles" : entity.source === "REGEX" ? "pi-equals" : "pi-file"}`} />}
+                        tooltip={`${isEnglish ? "Source" : "Kaynak"}: ${entitySourceLabels[entity.source] ?? entity.source}`}
+                      />
+                      <AIcon
+                        icon={<i className="pi pi-chart-line" />}
+                        tooltip={`${isEnglish ? "Confidence" : "Güven"}: ${formatEntityConfidence(entity.confidence)}`}
+                      />
+                    </div>
                     <p>{entity.evidenceSnippet}</p>
                   </article>
                 ))}

@@ -3,6 +3,7 @@ export * from "./a-dialog";
 export * from "./a-dropdown";
 export * from "./a-file-input";
 export * from "./a-icon";
+export * from "./a-info";
 export * from "./a-input";
 export * from "./a-table";
 export * from "./a-textarea";

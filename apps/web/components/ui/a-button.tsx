@@ -20,6 +20,7 @@ export function AButton({
   const resolvedClassName = cx(
     "a-button p-button p-component",
     tone === "secondary" && "p-button-secondary",
+    tone === "secondary" && "p-button-outlined",
     aButtonBaseClassName,
     className
   );

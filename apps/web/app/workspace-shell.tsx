@@ -11,17 +11,6 @@ import { LanguageProvider, useLanguage } from "./language-context";
 
 type ShellPageId = WorkspaceSectionId | "settings";
 
-const sectionMeta: Record<ShellPageId, { eyebrow: string; title: string }> = {
-  dashboard: { eyebrow: "Sprint 23", title: "Genel durum ve sistem ozeti" },
-  documents: { eyebrow: "Sprint 23", title: "Belgeler ve indeksleme durumu" },
-  entities: { eyebrow: "Sprint 23", title: "Varliklar, aliaslar ve birlestirme" },
-  search: { eyebrow: "Sprint 23", title: "Hibrit arama ve kaynak inceleme" },
-  chat: { eyebrow: "Sprint 23", title: "Sohbet ve kaynakli cevaplar" },
-  transfer: { eyebrow: "Sprint 23", title: "Yedek alma ve tasima" },
-  upload: { eyebrow: "Sprint 23", title: "Yükleme ve indeksleme akışı" },
-  settings: { eyebrow: "Platform", title: "Ayarlar" }
-};
-
 type WorkspaceShellProps = {
   activeSection?: ShellPageId;
 };
@@ -36,7 +25,6 @@ export function WorkspaceShell({ activeSection = "dashboard" }: WorkspaceShellPr
 
 function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>) {
   const { language } = useLanguage();
-  const meta = sectionMeta[activeSection];
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
 
   return (
@@ -93,14 +81,6 @@ function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>)
           </aside>
 
           <section className="content">
-            <header className="topbar">
-              <div>
-                <p className="eyebrow">{meta.eyebrow}</p>
-                <h2>{pageTitle(activeSection, language, meta.title)}</h2>
-              </div>
-              <span className="status">localhost</span>
-            </header>
-
             {activeSection === "settings" ? <SettingsPanel /> : <WorkspaceApp activeSection={activeSection} />}
           </section>
         </div>
@@ -121,19 +101,4 @@ function sectionLabel(section: WorkspaceSectionId, language: "tr" | "en") {
   };
 
   return labels[section][language];
-}
-
-function pageTitle(page: ShellPageId, language: "tr" | "en", fallback: string) {
-  const titles: Partial<Record<ShellPageId, Record<"tr" | "en", string>>> = {
-    dashboard: { tr: "Genel durum ve sistem ozeti", en: "System overview and status" },
-    documents: { tr: "Belgeler ve indeksleme durumu", en: "Documents and indexing status" },
-    entities: { tr: "Varliklar, takma adlar ve birlestirme", en: "Entities, aliases, and merging" },
-    search: { tr: "Hibrit arama ve kaynak inceleme", en: "Hybrid search and source review" },
-    chat: { tr: "Sohbet ve kaynakli yanitlar", en: "Chat and cited answers" },
-    transfer: { tr: "Yedekleme ve tasima", en: "Backup and transfer" },
-    upload: { tr: "Yukleme ve indeksleme akisi", en: "Upload and indexing flow" },
-    settings: { tr: "Ayarlar", en: "Settings" }
-  };
-
-  return titles[page]?.[language] ?? fallback;
 }
