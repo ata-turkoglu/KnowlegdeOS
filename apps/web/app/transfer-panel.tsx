@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { AButton, AFileInput, AInput } from "../components/ui";
+import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
 const apiBaseUrl = "http://127.0.0.1:4000";
@@ -24,6 +25,8 @@ type ImportResult = {
 };
 
 export function TransferPanel() {
+  const { language } = useLanguage();
+  const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
   const [targetSlug, setTargetSlug] = useState("merter-arsivi-import-test");
   const [bundleFile, setBundleFile] = useState<File | null>(null);
@@ -34,7 +37,7 @@ export function TransferPanel() {
 
   async function postBundleAction(endpoint: "export-bundle" | "backups") {
     if (!workspaceSlug.trim()) {
-      setMessage("Workspace slug bos olamaz.");
+      setMessage(isEnglish ? "Workspace slug cannot be empty." : "Workspace slug boş olamaz.");
       return;
     }
 
@@ -57,17 +60,17 @@ export function TransferPanel() {
     setIsBusy(false);
 
     if (!response.ok) {
-      setMessage(body.error ?? "Islem basarisiz.");
+      setMessage(body.error ?? (isEnglish ? "Action failed." : "İşlem başarısız."));
       return;
     }
 
     setLastBundle(body);
-    setMessage(endpoint === "backups" ? "Backup olusturuldu." : "Export bundle olusturuldu.");
+    setMessage(endpoint === "backups" ? (isEnglish ? "Backup created." : "Yedek oluşturuldu.") : isEnglish ? "Export bundle created." : "Dışa aktarma paketi oluşturuldu.");
   }
 
   async function importBundle() {
     if (!bundleFile) {
-      setMessage("Import icin bundle dosyasi secilmedi.");
+      setMessage(isEnglish ? "Choose a bundle file to import." : "İçe aktarmak için paket dosyası seçilmedi.");
       return;
     }
 
@@ -81,7 +84,7 @@ export function TransferPanel() {
       bundle = JSON.parse(await bundleFile.text()) as unknown;
     } catch {
       setIsBusy(false);
-      setMessage("Bundle dosyasi gecerli JSON degil.");
+      setMessage(isEnglish ? "The bundle file is not valid JSON." : "Paket dosyası geçerli JSON değil.");
       return;
     }
 
@@ -100,19 +103,19 @@ export function TransferPanel() {
     setIsBusy(false);
 
     if (!response.ok) {
-      setMessage(body.error ?? "Import basarisiz.");
+      setMessage(body.error ?? (isEnglish ? "Import failed." : "İçe aktarma başarısız."));
       return;
     }
 
     setLastImport(body);
-    setMessage("Workspace import edildi.");
+    setMessage(isEnglish ? "Workspace imported." : "Workspace içe aktarıldı.");
   }
 
   return (
     <section className="panel transfer-panel">
       <div>
-        <p className="eyebrow">Tasinabilirlik</p>
-        <h3>Export, backup ve import</h3>
+        <p className="eyebrow">{isEnglish ? "Portability" : "Tasinabilirlik"}</p>
+        <h3>{isEnglish ? "Export, backup, and import" : "Disari aktarma, yedekleme ve ice aktarma"}</h3>
       </div>
 
       <div className="transfer-grid">
@@ -122,7 +125,7 @@ export function TransferPanel() {
             onClick={() => postBundleAction("export-bundle")}
             disabled={isBusy}
           >
-            Export
+            {isEnglish ? "Export" : "Disari aktar"}
           </AButton>
           <AButton
             type="button"
@@ -130,7 +133,7 @@ export function TransferPanel() {
             onClick={() => postBundleAction("backups")}
             disabled={isBusy}
           >
-            Backup
+            {isEnglish ? "Backup" : "Yedekle"}
           </AButton>
         </div>
       </div>
@@ -138,13 +141,13 @@ export function TransferPanel() {
       {lastBundle ? (
         <div className="transfer-result">
           <div className="result-strip">
-            <span>Dosya</span>
+            <span>{isEnglish ? "File" : "Dosya"}</span>
             <strong>{lastBundle.fileName}</strong>
           </div>
           <div className="result-strip">
-            <span>Icerik</span>
+            <span>{isEnglish ? "Contents" : "İçerik"}</span>
             <strong>
-              {lastBundle.manifest.fileCount} dosya · {lastBundle.manifest.totalBytes} byte
+              {lastBundle.manifest.fileCount} {isEnglish ? "files" : "dosya"} · {lastBundle.manifest.totalBytes} byte
             </strong>
           </div>
           <p className="path-output">{lastBundle.bundlePath}</p>
@@ -153,12 +156,12 @@ export function TransferPanel() {
 
       <div className="import-box">
         <label>
-          Hedef workspace slug
+          {isEnglish ? "Target workspace slug" : "Hedef workspace slug"}
           <AInput value={targetSlug} onChange={(event) => setTargetSlug(event.target.value)} />
         </label>
 
         <label>
-          Export bundle
+          {isEnglish ? "Export bundle" : "Disari aktarma paketi"}
           <AFileInput
             accept=".json,.knowledgeos-export.json,application/json"
             onChange={(event) => setBundleFile(event.target.files?.[0] ?? null)}
@@ -166,7 +169,7 @@ export function TransferPanel() {
         </label>
 
         <AButton type="button" onClick={importBundle} disabled={isBusy}>
-          Import
+          {isEnglish ? "Import" : "Ice aktar"}
         </AButton>
       </div>
 
@@ -177,8 +180,8 @@ export function TransferPanel() {
             <strong>{lastImport.workspaceSlug}</strong>
           </div>
           <div className="result-strip">
-            <span>Restore</span>
-            <strong>{lastImport.restoredFiles} dosya</strong>
+            <span>{isEnglish ? "Restore" : "Geri yükleme"}</span>
+            <strong>{lastImport.restoredFiles} {isEnglish ? "files" : "dosya"}</strong>
           </div>
           <p className="path-output">{lastImport.storagePath}</p>
         </div>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AButton } from "../components/ui";
+import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
 const apiBaseUrl = "http://127.0.0.1:4000";
@@ -27,9 +28,11 @@ const emptySummary: DashboardSummary = {
 };
 
 export function DashboardMetrics() {
+  const { language } = useLanguage();
+  const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
   const [summary, setSummary] = useState<DashboardSummary>(emptySummary);
-  const [status, setStatus] = useState("Yukleniyor...");
+  const [status, setStatus] = useState(isEnglish ? "Loading..." : "Yükleniyor...");
   const [isLoading, setIsLoading] = useState(false);
 
   async function loadSummary(nextWorkspaceSlug = workspaceSlug) {
@@ -46,12 +49,12 @@ export function DashboardMetrics() {
     setIsLoading(false);
 
     if (!response.ok) {
-      setStatus(body.error ?? "Dashboard bilgisi alinamadi.");
+      setStatus(body.error ?? (isEnglish ? "Dashboard data could not be loaded." : "Dashboard bilgisi alınamadı."));
       return;
     }
 
     setSummary(body);
-    setStatus(`Guncellendi: ${body.workspaceSlug}`);
+    setStatus(isEnglish ? `Updated: ${body.workspaceSlug}` : `Güncellendi: ${body.workspaceSlug}`);
   }
 
   useEffect(() => {
@@ -59,29 +62,29 @@ export function DashboardMetrics() {
   }, [workspaceSlug]);
 
   return (
-    <section className="dashboard-panel" aria-label="Archive summary">
+    <section className="dashboard-panel" aria-label={isEnglish ? "Archive summary" : "Arsiv ozeti"}>
       <div className="dashboard-toolbar">
         <AButton type="button" onClick={() => loadSummary()} disabled={isLoading}>
-          {isLoading ? "Yukleniyor..." : "Yenile"}
+          {isLoading ? (isEnglish ? "Loading..." : "Yükleniyor...") : isEnglish ? "Refresh" : "Yenile"}
         </AButton>
       </div>
 
       <div className="metrics">
         <div>
-          <span>Workspace</span>
+          <span>{isEnglish ? "Workspaces" : "Calisma alanlari"}</span>
           <strong>{summary.workspaceCount}</strong>
         </div>
         <div>
-          <span>Belge</span>
+          <span>{isEnglish ? "Documents" : "Belgeler"}</span>
           <strong>{summary.documentCount}</strong>
-          <small>{summary.indexedDocumentCount} indeksli</small>
+          <small>{summary.indexedDocumentCount} {isEnglish ? "indexed" : "indeksli"}</small>
         </div>
         <div>
-          <span>Entity</span>
+          <span>{isEnglish ? "Entities" : "Varliklar"}</span>
           <strong>{summary.entityCount}</strong>
         </div>
         <div>
-          <span>Indeks</span>
+          <span>{isEnglish ? "Index" : "İndeks"}</span>
           <strong>{summary.chunkCount}</strong>
           <small>{summary.embeddingCount} embedding</small>
         </div>

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { AButton, AInput } from "../components/ui";
+import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
 const apiBaseUrl = "http://127.0.0.1:4000";
@@ -53,6 +54,8 @@ type SearchResponse = {
 };
 
 export function SearchPanel() {
+  const { language } = useLanguage();
+  const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
   const [query, setQuery] = useState("Ali Cobanoglu gecen belgeleri ozetle");
   const [mode, setMode] = useState<SearchMode>("hybrid");
@@ -63,7 +66,7 @@ export function SearchPanel() {
 
   async function runSearch() {
     if (!query.trim()) {
-      setMessage("Arama sorgusu bos olamaz.");
+      setMessage(isEnglish ? "Search query cannot be empty." : "Arama sorgusu boş olamaz.");
       return;
     }
 
@@ -92,12 +95,12 @@ export function SearchPanel() {
     setIsBusy(false);
 
     if (!result.ok) {
-      setMessage(body.error ?? "Arama basarisiz.");
+      setMessage(body.error ?? (isEnglish ? "Search failed." : "Arama başarısız."));
       return;
     }
 
     setResponse(body);
-    setMessage(`${body.queryType} sonucu yuklendi.`);
+    setMessage(isEnglish ? `${body.queryType} results loaded.` : `${body.queryType} sonucu yüklendi.`);
   }
 
   async function rebuildSemanticIndex() {
@@ -116,11 +119,11 @@ export function SearchPanel() {
     setIsBusy(false);
 
     if (!result.ok) {
-      setMessage(body.error ?? "Semantic index yenilenemedi.");
+      setMessage(body.error ?? (isEnglish ? "Semantic index could not be rebuilt." : "Semantic indeks yenilenemedi."));
       return;
     }
 
-    setMessage(`${body.chunks.length} chunk icin semantic index yenilendi.`);
+    setMessage(isEnglish ? `Semantic index rebuilt for ${body.chunks.length} document sections.` : `${body.chunks.length} belge bölümü için anlamsal indeks yenilendi.`);
   }
 
   const documents: SearchDocument[] =
@@ -138,13 +141,13 @@ export function SearchPanel() {
   return (
     <section className="panel search-panel">
       <div>
-        <p className="eyebrow">Arama</p>
-        <h3>Entity, semantic ve hybrid search</h3>
+        <p className="eyebrow">{isEnglish ? "Search" : "Arama"}</p>
+        <h3>{isEnglish ? "Entity, semantic, and hybrid search" : "Varlik, anlamsal ve hibrit arama"}</h3>
       </div>
 
       <div className="search-form">
         <label>
-          Sorgu
+          {isEnglish ? "Query" : "Sorgu"}
           <AInput value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label>
@@ -160,7 +163,7 @@ export function SearchPanel() {
       </div>
 
       <div className="search-controls">
-        <div className="segmented-control" aria-label="Search mode">
+        <div className="segmented-control" aria-label={isEnglish ? "Search mode" : "Arama modu"}>
           {(["entity", "semantic", "hybrid"] as SearchMode[]).map((item) => (
             <AButton
               key={item}
@@ -174,7 +177,7 @@ export function SearchPanel() {
           ))}
         </div>
         <AButton type="button" onClick={runSearch} disabled={isBusy}>
-          {isBusy ? "Araniyor..." : "Ara"}
+          {isBusy ? (isEnglish ? "Searching..." : "Aranıyor...") : isEnglish ? "Search" : "Ara"}
         </AButton>
         <AButton
           type="button"
@@ -182,20 +185,20 @@ export function SearchPanel() {
           onClick={rebuildSemanticIndex}
           disabled={isBusy}
         >
-          Semantic rebuild
+          {isEnglish ? "Rebuild semantic index" : "Anlamsal indeksi yenile"}
         </AButton>
       </div>
 
       {response ? (
         <div className="search-result-panel">
           <div className="result-strip">
-            <span>Query Type</span>
+            <span>{isEnglish ? "Query type" : "Sorgu tipi"}</span>
             <strong>{response.queryType}</strong>
           </div>
 
           {response.matchedEntity ? (
             <div className="result-strip">
-              <span>Matched Entity</span>
+              <span>{isEnglish ? "Matched entity" : "Eslesen varlik"}</span>
               <strong>{response.matchedEntity.canonicalValue}</strong>
             </div>
           ) : null}

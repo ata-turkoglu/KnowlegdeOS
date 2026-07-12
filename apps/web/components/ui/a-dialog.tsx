@@ -7,8 +7,6 @@ export type ADialogProps = DialogProps;
 
 export function ADialog({ children, className, ...props }: ADialogProps) {
   return (
-    <Dialog {...props} className={cx("a-dialog", className)}>
-      <div className="a-dialog-content">{children}</div>
-    </Dialog>
+    <Dialog {...props} className={cx("a-dialog", className)}>{children}</Dialog>
   );
 }

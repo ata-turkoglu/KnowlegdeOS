@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { AButton, ADialog, AFileInput, AInput, ATextarea } from "../components/ui";
+import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
 const apiBaseUrl = "http://127.0.0.1:4000";
@@ -39,6 +40,8 @@ type UploadedDocument = {
 };
 
 export function UploadPanel() {
+  const { language } = useLanguage();
+  const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
   const [prompt, setPrompt] = useState("");
   const [showExample, setShowExample] = useState(false);
@@ -53,13 +56,16 @@ export function UploadPanel() {
   const [isUploading, setIsUploading] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
 
-  const promptPreview = useMemo(() => prompt || "Prompt yukleniyor...", [prompt]);
+  const promptPreview = useMemo(
+    () => prompt || (isEnglish ? "Loading prompt..." : "Prompt yükleniyor..."),
+    [isEnglish, prompt]
+  );
 
   useEffect(() => {
     fetch(`${apiBaseUrl}/api/prompts/ocr-markdown`)
       .then((response) => response.json())
       .then((data: { prompt: string }) => setPrompt(data.prompt))
-      .catch(() => setPrompt("OCR promptu API'den alinamadi."));
+      .catch(() => setPrompt("OCR promptu API'den alınamadı."));
   }, []);
 
   async function handleMarkdownChange(files: FileList | null) {
@@ -93,12 +99,12 @@ export function UploadPanel() {
 
   async function copyPrompt() {
     await navigator.clipboard.writeText(prompt);
-    setMessage("Prompt kopyalandi.");
+    setMessage(isEnglish ? "Prompt copied." : "Prompt kopyalandı.");
   }
 
   async function uploadDocuments() {
     if (markdownFiles.length === 0) {
-      setMessage("Markdown dosyasi secilmedi.");
+      setMessage(isEnglish ? "No Markdown file selected." : "Markdown dosyası seçilmedi.");
       return;
     }
 
@@ -129,18 +135,18 @@ export function UploadPanel() {
     setIsUploading(false);
 
     if (!response.ok) {
-      setMessage(body.error ?? "Yukleme basarisiz.");
+      setMessage(body.error ?? (isEnglish ? "Upload failed." : "Yükleme başarısız."));
       return;
     }
 
     const documents: UploadedDocument[] = markdownFiles.length === 1 ? [body] : body.documents;
     setUploadedDocuments(documents);
-    setMessage(`${documents.length} belge yuklendi. Indeksleme icin hazir.`);
+    setMessage(isEnglish ? `${documents.length} document(s) uploaded and ready to index.` : `${documents.length} belge yüklendi. İndeksleme için hazır.`);
   }
 
   async function indexUploadedDocuments(useLlm: boolean) {
     if (uploadedDocuments.length === 0) {
-      setMessage("Once Markdown dosyasini yukle.");
+      setMessage(isEnglish ? "Upload a Markdown file first." : "Önce Markdown dosyasını yükle.");
       return;
     }
 
@@ -168,9 +174,9 @@ export function UploadPanel() {
         }
       }
 
-      setMessage(`${uploadedDocuments.length} belge indekslendi.`);
+      setMessage(isEnglish ? `${uploadedDocuments.length} document(s) indexed.` : `${uploadedDocuments.length} belge indekslendi.`);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Indeksleme basarisiz.");
+      setMessage(error instanceof Error ? error.message : isEnglish ? "Indexing failed." : "İndeksleme başarısız.");
     } finally {
       setIsIndexing(false);
     }
@@ -181,22 +187,22 @@ export function UploadPanel() {
       <div className="panel upload-panel upload-card">
         <div className="upload-heading">
           <div>
-            <p className="eyebrow">Upload</p>
-            <h3>Markdown calisma kopyasi</h3>
+            <p className="eyebrow">{isEnglish ? "Upload" : "Yukle"}</p>
+            <h3>{isEnglish ? "Markdown working copy" : "Markdown çalışma kopyası"}</h3>
           </div>
           <AButton type="button" tone="secondary" onClick={() => setShowOcrHelp(true)}>
-            OCR yardimini ac
+            {isEnglish ? "Open OCR help" : "OCR yardımını aç"}
           </AButton>
         </div>
 
         <div className="upload-fields">
           <label>
-            Belge basligi
+            {isEnglish ? "Document title" : "Belge başlığı"}
             <AInput value={title} onChange={(event) => setTitle(event.target.value)} />
           </label>
 
           <label>
-            Markdown dosyalari
+            {isEnglish ? "Markdown files" : "Markdown dosyaları"}
             <AFileInput
               accept=".md,.txt,text/markdown,text/plain"
               multiple
@@ -205,22 +211,22 @@ export function UploadPanel() {
           </label>
 
           <label>
-            Orijinal tarama dosyasi (tek Markdown secildiginde)
+            {isEnglish ? "Original scan (when one Markdown file is selected)" : "Orijinal tarama dosyası (tek Markdown seçildiğinde)"}
             <AFileInput
               accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,application/pdf,image/*"
               onChange={(event) => setOriginalFile(event.target.files?.[0] ?? null)}
             />
           </label>
-        </div>
 
-        <AButton type="button" onClick={uploadDocuments} disabled={isUploading}>
-          {isUploading ? "Yukleniyor..." : "Markdown dosyalarini yukle"}
-        </AButton>
+          <AButton className="upload-submit" type="button" onClick={uploadDocuments} disabled={isUploading}>
+            {isUploading ? (isEnglish ? "Uploading..." : "Yükleniyor...") : isEnglish ? "Upload Markdown files" : "Markdown dosyalarını yükle"}
+          </AButton>
+        </div>
 
         {uploadedDocuments.length > 0 ? (
           <div className="upload-index-panel">
             <div>
-              <strong>{uploadedDocuments.length} belge</strong>
+              <strong>{uploadedDocuments.length} {isEnglish ? "document(s)" : "belge"}</strong>
               <span>{uploadedDocuments.map((document) => document.documentName).join(", ")}</span>
             </div>
             <div className="button-row">
@@ -230,14 +236,14 @@ export function UploadPanel() {
                 onClick={() => indexUploadedDocuments(false)}
                 disabled={isIndexing}
               >
-                {isIndexing ? "Indeksleniyor..." : "Indeksle"}
+                {isIndexing ? (isEnglish ? "Indexing..." : "İndeksleniyor...") : isEnglish ? "Index" : "İndeksle"}
               </AButton>
               <AButton
                 type="button"
                 onClick={() => indexUploadedDocuments(true)}
                 disabled={isIndexing}
               >
-                LLM ile indeksle
+                {isEnglish ? "Index with LLM" : "LLM ile indeksle"}
               </AButton>
             </div>
           </div>
@@ -247,7 +253,7 @@ export function UploadPanel() {
       </div>
 
       <ADialog
-        header="OCR yardimi"
+        header={isEnglish ? "OCR help" : "OCR yardımı"}
         visible={showOcrHelp}
         onHide={() => setShowOcrHelp(false)}
         modal
@@ -255,25 +261,26 @@ export function UploadPanel() {
         style={{ width: "min(720px, calc(100vw - 32px))" }}
       >
         <div>
-          <h3>ChatGPT Markdown promptu</h3>
+          <h3>{isEnglish ? "ChatGPT Markdown prompt" : "ChatGPT Markdown promptu"}</h3>
           <p>
-            Taranmis PDF, JPG, PNG veya TIFF dosyasini once bu prompt ile
-            KnowledgeOS uyumlu Markdown'a cevir.
+            {isEnglish
+              ? "Convert a scanned PDF, JPG, PNG, or TIFF file to KnowledgeOS-compatible Markdown with this prompt first."
+              : "Taranmış PDF, JPG, PNG veya TIFF dosyasını önce bu prompt ile KnowledgeOS uyumlu Markdown'a çevir."}
           </p>
         </div>
 
-        <ATextarea readOnly value={promptPreview} aria-label="OCR Markdown prompt" rows={12} />
+        <ATextarea readOnly value={promptPreview} aria-label={isEnglish ? "OCR Markdown prompt" : "OCR Markdown promptu"} rows={12} />
 
         <div className="button-row">
           <AButton type="button" onClick={copyPrompt} disabled={!prompt}>
-            Promptu kopyala
+            {isEnglish ? "Copy prompt" : "Promptu kopyala"}
           </AButton>
           <AButton
             type="button"
             tone="secondary"
             onClick={() => setShowExample(!showExample)}
           >
-            Ornek Markdown
+            {isEnglish ? "Example Markdown" : "Örnek Markdown"}
           </AButton>
         </div>
 
@@ -282,12 +289,12 @@ export function UploadPanel() {
 
       <div className="panel preview-panel">
         <div>
-          <p className="eyebrow">Onizleme</p>
-          <h3>Yuklenen Markdown dosyalari</h3>
+          <p className="eyebrow">{isEnglish ? "Preview" : "Önizleme"}</p>
+          <h3>{isEnglish ? "Uploaded Markdown files" : "Yüklenen Markdown dosyaları"}</h3>
         </div>
         <div className="preview-content">
-          <aside className="preview-file-list" aria-label="Yuklenen dosyalar">
-            <strong>Dosyalar</strong>
+          <aside className="preview-file-list" aria-label={isEnglish ? "Uploaded files" : "Yüklenen dosyalar"}>
+            <strong>{isEnglish ? "Files" : "Dosyalar"}</strong>
             {markdownFiles.length > 0 ? (
               markdownFiles.map((file, index) => (
                 <button
@@ -300,14 +307,14 @@ export function UploadPanel() {
                 </button>
               ))
             ) : (
-              <p>Henuz dosya secilmedi.</p>
+              <p>{isEnglish ? "No file selected yet." : "Henüz dosya seçilmedi."}</p>
             )}
           </aside>
 
           <div className="preview-document">
-            <h3>{markdownFiles[previewFileIndex]?.name ?? "Dosya onizlemesi"}</h3>
+            <h3>{markdownFiles[previewFileIndex]?.name ?? (isEnglish ? "File preview" : "Dosya önizlemesi")}</h3>
             <pre className="code-preview">
-              {preview || "Markdown icerigi burada gorunecek."}
+              {preview || (isEnglish ? "Markdown content will appear here." : "Markdown içeriği burada görünecek.")}
             </pre>
           </div>
         </div>

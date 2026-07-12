@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { AButton, ADropdown, AInput } from "../components/ui";
+import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
 type WorkspaceOption = {
@@ -10,6 +11,7 @@ type WorkspaceOption = {
 };
 
 export function WorkspaceSwitcher() {
+  const { language } = useLanguage();
   const {
     workspaceSlug,
     setWorkspaceSlug,
@@ -33,7 +35,7 @@ export function WorkspaceSwitcher() {
     const trimmedName = name.trim();
 
     if (!trimmedName) {
-      setMessage("Workspace adi gerekli.");
+      setMessage(language === "en" ? "Workspace name is required." : "Workspace adı gerekli.");
       return;
     }
 
@@ -49,12 +51,14 @@ export function WorkspaceSwitcher() {
       setName("");
       setDescription("");
       setIsCreating(false);
-      setMessage(`${workspace.name} olusturuldu.`);
+      setMessage(language === "en" ? `${workspace.name} was created.` : `${workspace.name} oluşturuldu.`);
     } catch (createError) {
       setMessage(
         createError instanceof Error
           ? createError.message
-          : "Workspace olusturulamadi."
+          : language === "en"
+            ? "Workspace could not be created."
+            : "Workspace oluşturulamadı."
       );
     } finally {
       setIsSaving(false);
@@ -68,13 +72,13 @@ export function WorkspaceSwitcher() {
           value={workspaceSlug}
           options={options}
           onChange={(event) => setWorkspaceSlug(String(event.value))}
-          placeholder={isLoading ? "Workspace yukleniyor..." : "Workspace sec"}
+          placeholder={isLoading ? (language === "tr" ? "Workspace yukleniyor..." : "Loading workspaces...") : language === "tr" ? "Workspace sec" : "Select workspace"}
           disabled={isLoading || options.length === 0}
           className="workspace-switcher__dropdown"
         />
         <AButton
           type="button"
-          aria-label="Yeni workspace ekle"
+          aria-label={language === "tr" ? "Yeni workspace ekle" : "Add workspace"}
           className="workspace-switcher__add"
           onClick={() => {
             setIsCreating((current) => !current);
@@ -88,23 +92,23 @@ export function WorkspaceSwitcher() {
       {isCreating ? (
         <div className="workspace-switcher__form">
           <label>
-            Workspace adi
+            {language === "tr" ? "Workspace adi" : "Workspace name"}
             <AInput
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Yeni workspace"
+              placeholder={language === "tr" ? "Yeni workspace" : "New workspace"}
             />
           </label>
           <label>
-            Aciklama
+            {language === "tr" ? "Aciklama" : "Description"}
             <AInput
               value={description}
               onChange={(event) => setDescription(event.target.value)}
-              placeholder="Opsiyonel"
+              placeholder={language === "tr" ? "Opsiyonel" : "Optional"}
             />
           </label>
           <AButton type="button" onClick={handleCreateWorkspace} disabled={isSaving}>
-            {isSaving ? "Olusturuluyor..." : "Olustur"}
+            {isSaving ? (language === "tr" ? "Olusturuluyor..." : "Creating...") : language === "tr" ? "Olustur" : "Create"}
           </AButton>
         </div>
       ) : null}
