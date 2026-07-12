@@ -1,0 +1,122 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: knowledgeos
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d knowledgeos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+    command:
+      - corepack
+      - pnpm
+      - --filter
+      - "@knowledgeos/database"
+      - db:migrate
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/knowledgeos
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  ollama-models:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:8b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - ollama pull "$${OLLAMA_LLM_MODEL:-qwen3:8b}" && ollama pull "$${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+    command:
+      - corepack
+      - pnpm
+      - --filter
+      - "@knowledgeos/api"
+      - dev
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/knowledgeos
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:8b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}
+      STORAGE_ROOT: /app/storage
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+    ports:
+      - "4000:4000"
+    volumes:
+      - storage-data:/app/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+      ollama-models:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+    command:
+      - corepack
+      - pnpm
+      - --filter
+      - "@knowledgeos/web"
+      - dev
+    environment:
+      WEB_PORT: 3000
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web/app:/app/apps/web/app
+      - ./apps/web/components:/app/apps/web/components
+      - ./apps/web/package.json:/app/apps/web/package.json
+      - ./apps/web/next.config.mjs:/app/apps/web/next.config.mjs
+      - ./apps/web/postcss.config.mjs:/app/apps/web/postcss.config.mjs
+      - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json
+      - ./packages/shared:/app/packages/shared
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  ollama-data:
+  storage-data:

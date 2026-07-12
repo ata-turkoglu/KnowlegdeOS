@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "@knowledgeos/ai": ["packages/ai/src/index.ts"],
+      "@knowledgeos/database": ["packages/database/src/index.ts"],
+      "@knowledgeos/ingestion": ["packages/ingestion/src/index.ts"],
+      "@knowledgeos/search": ["packages/search/src/index.ts"],
+      "@knowledgeos/shared": ["packages/shared/src/index.ts"]
+    }
+  }
+}
