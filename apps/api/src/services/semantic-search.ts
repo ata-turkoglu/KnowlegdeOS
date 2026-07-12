@@ -1,10 +1,10 @@
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { OllamaEmbeddingProvider } from "@knowledgeos/ai";
 import type { ApiConfig } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
 import { ensureWorkspaceStorage, getWorkspaceStoragePaths } from "./storage.js";
 import type { IndexedDocumentMetadata } from "./documents.js";
+import { getEmbeddingProvider, selectedEmbeddingModel } from "./ai-providers.js";
 
 export type SemanticIndexChunk = {
   id: string;
@@ -52,10 +52,7 @@ export async function rebuildSemanticIndex(
   const workspaceSlug = slugify(workspaceSlugInput);
   const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
   const metadataFiles = await readdir(paths.metadata);
-  const provider = new OllamaEmbeddingProvider(
-    config.ollamaBaseUrl,
-    config.ollamaEmbeddingModel
-  );
+  const provider = getEmbeddingProvider(config);
   const chunks: SemanticIndexChunk[] = [];
 
   for (const fileName of metadataFiles) {
@@ -90,7 +87,7 @@ export async function rebuildSemanticIndex(
   const index: SemanticIndex = {
     version: 1,
     workspaceSlug,
-    embeddingModel: config.ollamaEmbeddingModel,
+    embeddingModel: selectedEmbeddingModel(config),
     updatedAt: new Date().toISOString(),
     chunks
   };
@@ -109,10 +106,7 @@ export async function searchSemanticDocuments(
 ): Promise<SemanticSearchResult> {
   const workspaceSlug = slugify(input.workspaceSlug);
   const index = await readSemanticIndex(config, workspaceSlug);
-  const provider = new OllamaEmbeddingProvider(
-    config.ollamaBaseUrl,
-    config.ollamaEmbeddingModel
-  );
+  const provider = getEmbeddingProvider(config);
   const queryEmbedding = await provider.embed(input.query);
   const results = index.chunks
     .map((chunk) => ({
@@ -147,7 +141,7 @@ async function readSemanticIndex(config: ApiConfig, workspaceSlug: string) {
   try {
     const index = JSON.parse(await readFile(indexPath, "utf8")) as SemanticIndex;
 
-    if (index.embeddingModel === config.ollamaEmbeddingModel) {
+    if (index.embeddingModel === selectedEmbeddingModel(config)) {
       return index;
     }
   } catch {

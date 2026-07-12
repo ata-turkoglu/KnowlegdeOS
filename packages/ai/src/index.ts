@@ -1,6 +1,6 @@
 export interface LLMProvider {
-  generate(prompt: string): Promise<string>;
-  generateJson<T>(prompt: string): Promise<T>;
+  generate(prompt: string, signal?: AbortSignal): Promise<string>;
+  generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T>;
 }
 
 export interface EmbeddingProvider {
@@ -35,6 +35,8 @@ export {
   OllamaProvider,
   checkOllamaHealth
 } from "./providers/ollama.js";
+export { OpenAIEmbeddingProvider, OpenAIProvider } from "./providers/openai.js";
+export { GeminiEmbeddingProvider, GeminiProvider } from "./providers/gemini.js";
 
 export const ocrMarkdownPrompt = `Aşağıdaki taranmış belgeyi KnowledgeOS uyumlu Markdown formatına çevir.
 

@@ -4,7 +4,6 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import type { SavedMultipartFile } from "@fastify/multipart";
 import {
   buildEntityExtractionPrompt,
-  OllamaProvider,
   type LLMExtractionResult
 } from "@knowledgeos/ai";
 import { ingestMarkdown, type IngestionResult } from "@knowledgeos/ingestion";
@@ -17,6 +16,7 @@ import {
   writeWorkspaceMetadata
 } from "./storage.js";
 import { rebuildEntityIndex } from "./entities.js";
+import { getLlmProvider } from "./ai-providers.js";
 
 const markdownExtensions = new Set([".md", ".txt"]);
 const originalExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"]);
@@ -297,11 +297,7 @@ export async function reindexStoredDocument(
   if (input.useLlm) {
     try {
       input.onProgress?.("Waiting for AI response");
-      const provider = new OllamaProvider(
-        config.ollamaBaseUrl,
-        config.ollamaLlmModel,
-        config.ollamaLlmTimeoutMs
-      );
+      const provider = getLlmProvider(config);
       const llmExtraction = await provider.generateJson<LLMExtractionResult>(
         buildEntityExtractionPrompt(ingestion.content),
         input.signal
