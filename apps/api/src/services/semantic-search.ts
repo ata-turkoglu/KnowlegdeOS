@@ -105,9 +105,14 @@ export async function searchSemanticDocuments(
   }
 ): Promise<SemanticSearchResult> {
   const workspaceSlug = slugify(input.workspaceSlug);
-  const index = await readSemanticIndex(config, workspaceSlug);
+  let index = await readSemanticIndex(config, workspaceSlug);
   const provider = getEmbeddingProvider(config);
   const queryEmbedding = await provider.embed(input.query);
+
+  if (index.chunks.some((chunk) => chunk.embedding.length !== queryEmbedding.length)) {
+    index = await rebuildSemanticIndex(config, workspaceSlug);
+  }
+
   const results = index.chunks
     .map((chunk) => ({
       documentName: chunk.documentName,

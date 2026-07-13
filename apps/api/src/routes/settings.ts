@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ApiConfig } from "../config/env.js";
+import { getEnvironmentPath, type ApiConfig } from "../config/env.js";
 
 type OllamaTagsResponse = {
   models?: Array<{ name?: string }>;
@@ -91,8 +91,49 @@ async function getInstalledModels(baseUrl: string): Promise<string[]> {
     .sort((a, b) => a.localeCompare(b));
 }
 
+async function getOpenAiModels(apiKey: string) {
+  const fallback = { llmModels: ["gpt-4.1", "gpt-4.1-mini"], embeddingModels: ["text-embedding-3-small", "text-embedding-3-large"] };
+  if (!apiKey) return fallback;
+  try {
+    const response = await fetch("https://api.openai.com/v1/models", { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!response.ok) return fallback;
+    const body = await response.json() as { data?: Array<{ id?: string }> };
+    const ids = (body.data ?? []).map((model) => model.id).filter((id): id is string => Boolean(id));
+    const embeddingModels = ids.filter((id) => id.startsWith("text-embedding-"));
+    const llmModels = ids.filter((id) => /^(gpt|o[0-9])/.test(id) && !id.includes("realtime") && !id.includes("audio") && !id.includes("transcribe"));
+    return { llmModels: llmModels.length ? llmModels.sort() : fallback.llmModels, embeddingModels: embeddingModels.length ? embeddingModels.sort() : fallback.embeddingModels };
+  } catch {
+    return fallback;
+  }
+}
+
+async function getGeminiModels(apiKey: string) {
+  const fallback = { llmModels: ["gemini-2.5-flash", "gemini-2.5-pro"], embeddingModels: ["gemini-embedding-2", "gemini-embedding-001"] };
+  if (!apiKey) return fallback;
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
+    if (!response.ok) return fallback;
+    const body = await response.json() as { models?: Array<{ name?: string; supportedGenerationMethods?: string[] }> };
+    const models = body.models ?? [];
+    const namesFor = (method: string) => models.filter((model) => model.supportedGenerationMethods?.includes(method)).map((model) => model.name?.replace(/^models\//, "")).filter((name): name is string => Boolean(name)).sort();
+    const llmModels = namesFor("generateContent");
+    const embeddingModels = namesFor("embedContent");
+    return { llmModels: llmModels.length ? llmModels : fallback.llmModels, embeddingModels: embeddingModels.length ? embeddingModels : fallback.embeddingModels };
+  } catch {
+    return fallback;
+  }
+}
+
 function settingsPath(config: ApiConfig) {
   return path.join(config.storageRoot, "settings", "models.json");
+}
+
+function activeLlmModel(config: ApiConfig) {
+  return config.llmProvider === "openai" ? config.openaiLlmModel : config.llmProvider === "gemini" ? config.geminiLlmModel : config.ollamaLlmModel;
+}
+
+function activeEmbeddingModel(config: ApiConfig) {
+  return config.embeddingProvider === "openai" ? config.openaiEmbeddingModel : config.embeddingProvider === "gemini" ? config.geminiEmbeddingModel : config.ollamaEmbeddingModel;
 }
 
 async function restoreSelectedModels(config: ApiConfig) {
@@ -135,7 +176,7 @@ async function persistSelectedModels(config: ApiConfig) {
 }
 
 async function writeEnvironmentValues(values: Record<string, string>) {
-  const envPath = path.join(process.cwd(), ".env");
+  const envPath = getEnvironmentPath();
   let content = "";
   try {
     content = await readFile(envPath, "utf8");
@@ -156,13 +197,15 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
 
   app.get("/api/settings/models", async () => {
     const models = await getInstalledModels(config.ollamaBaseUrl);
+    const openaiModels = await getOpenAiModels(config.openaiApiKey);
+    const geminiModels = await getGeminiModels(config.geminiApiKey);
     return {
-      llmModel: config.ollamaLlmModel,
-      embeddingModel: config.ollamaEmbeddingModel,
+      llmModel: activeLlmModel(config),
+      embeddingModel: activeEmbeddingModel(config),
       llmProvider: config.llmProvider,
       embeddingProvider: config.embeddingProvider,
-      openai: { configured: Boolean(config.openaiApiKey), llmModels: [config.openaiLlmModel, "gpt-4.1", "gpt-4.1-mini"], embeddingModels: [config.openaiEmbeddingModel, "text-embedding-3-small", "text-embedding-3-large"] },
-      gemini: { configured: Boolean(config.geminiApiKey), llmModels: [config.geminiLlmModel, "gemini-2.5-flash", "gemini-2.5-pro"], embeddingModels: [config.geminiEmbeddingModel, "gemini-embedding-2", "gemini-embedding-001"] },
+      openai: { configured: Boolean(config.openaiApiKey), llmModels: [...new Set([config.openaiLlmModel, ...openaiModels.llmModels])], embeddingModels: [...new Set([config.openaiEmbeddingModel, ...openaiModels.embeddingModels])] },
+      gemini: { configured: Boolean(config.geminiApiKey), llmModels: [...new Set([config.geminiLlmModel, ...geminiModels.llmModels])], embeddingModels: [...new Set([config.geminiEmbeddingModel, ...geminiModels.embeddingModels])] },
       models,
       catalog: await getCatalog()
     };

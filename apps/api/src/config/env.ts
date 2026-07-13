@@ -1,4 +1,14 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+import { existsSync } from "node:fs";
+import path from "node:path";
+
+export function getEnvironmentPath() {
+  const local = path.resolve(process.cwd(), ".env");
+  if (existsSync(local)) return local;
+  return path.resolve(process.cwd(), "../..", ".env");
+}
+
+dotenv.config({ path: getEnvironmentPath() });
 
 export type ApiConfig = {
   databaseUrl: string;
@@ -17,6 +27,7 @@ export type ApiConfig = {
   storageRoot: string;
   apiHost: string;
   apiPort: number;
+  environmentPath: string;
 };
 
 export function loadConfig(): ApiConfig {
@@ -39,6 +50,7 @@ export function loadConfig(): ApiConfig {
     geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2",
     storageRoot: process.env.STORAGE_ROOT ?? "./storage",
     apiHost: process.env.API_HOST ?? "127.0.0.1",
-    apiPort: Number(process.env.API_PORT ?? 4000)
+    apiPort: Number(process.env.API_PORT ?? 4000),
+    environmentPath: getEnvironmentPath()
   };
 }

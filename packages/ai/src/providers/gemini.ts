@@ -30,9 +30,13 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
       body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: 768 })
     });
-    if (!response.ok) throw new Error(`Gemini embedding failed with ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`Gemini embedding failed with ${response.status}: ${await response.text()}`);
+    }
     const body = await response.json() as { embedding?: { values?: number[] } };
-    if (!body.embedding?.values?.length) throw new Error("Gemini embedding response was empty.");
+    if (!body.embedding?.values?.length || !body.embedding.values.every(Number.isFinite)) {
+      throw new Error("Gemini embedding response was empty or invalid.");
+    }
     return body.embedding.values;
   }
 }
