@@ -6,5 +6,6 @@ export * from "./a-icon";
 export * from "./a-info";
 export * from "./a-input";
 export * from "./a-table";
+export * from "./a-tab-menu";
 export * from "./a-textarea";
 export * from "./a-ui-provider";

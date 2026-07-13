@@ -58,6 +58,7 @@ export function ChatPanel() {
   const [status, setStatus] = useState("");
   const [pendingDeletion, setPendingDeletion] = useState<ChatSession | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [activeModel, setActiveModel] = useState<string | null>(null);
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0];
   const conversation = activeSession.messages;
 
@@ -90,6 +91,15 @@ export function ChatPanel() {
     void loadHistory();
     return () => { isCurrent = false; };
   }, [workspaceSlug]);
+
+  useEffect(() => {
+    let isCurrent = true;
+    fetch(`${apiBaseUrl}/api/settings/models`)
+      .then(async (response) => response.ok ? response.json() as Promise<{ llmProvider: string; llmModel: string }> : null)
+      .then((settings) => { if (isCurrent && settings) setActiveModel(`${settings.llmProvider} / ${settings.llmModel}`); })
+      .catch(() => undefined);
+    return () => { isCurrent = false; };
+  }, []);
 
   function startNewChat() {
     const session = { id: `local:${crypto.randomUUID()}`, title: isEnglish ? "New chat" : "Yeni sohbet", messages: [] };
@@ -303,6 +313,7 @@ export function ChatPanel() {
           </button>
         </form>
         {status ? <p className="chat-error">{status}</p> : null}
+        {activeModel ? <p className="chat-active-model"><i className="pi pi-sparkles" aria-hidden="true" /> {isEnglish ? "Active model:" : "Aktif model:"} {activeModel}</p> : null}
         <p className="chat-composer__hint">{isEnglish ? "Press Enter to send · Shift + Enter for a new line" : "Enter ile gönderin · Yeni satır için Shift + Enter"}</p>
       </div>
       </div>

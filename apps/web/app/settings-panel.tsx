@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AButton, ADialog, ADropdown, AInput } from "../components/ui";
+import { AButton, ADialog, ADropdown, AInput, ATabMenu } from "../components/ui";
 import { type PlatformLanguage, useLanguage } from "./language-context";
 
 const languageOptions = [
-  { label: "Turkce", value: "tr" },
+  { label: "Türkçe", value: "tr" },
   { label: "English", value: "en" }
 ];
 
@@ -31,6 +31,7 @@ export function SettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [message, setMessage] = useState("");
+  const [activeTab, setActiveTab] = useState(0);
 
   useEffect(() => {
     setDraftLanguage(language);
@@ -51,7 +52,7 @@ export function SettingsPanel() {
         setEmbeddingProvider(settings.embeddingProvider ?? "ollama");
         setCloudModels({ openai: settings.openai, gemini: settings.gemini });
       })
-      .catch(() => setMessage(language === "tr" ? "Ollama modelleri yuklenemedi." : "Ollama models could not be loaded."))
+      .catch(() => setMessage(language === "tr" ? "Ollama modelleri yüklenemedi." : "Ollama models could not be loaded."))
       .finally(() => setLoading(false));
   }, [language]);
 
@@ -64,7 +65,7 @@ export function SettingsPanel() {
       body: JSON.stringify({ llmModel, embeddingModel, llmProvider, embeddingProvider })
     });
     if (!response.ok) {
-      setMessage(language === "tr" ? "Model ayarlari kaydedilemedi." : "Model settings could not be saved.");
+      setMessage(language === "tr" ? "Model ayarları kaydedilemedi." : "Model settings could not be saved.");
       return;
     }
     setLanguage(draftLanguage);
@@ -86,7 +87,7 @@ export function SettingsPanel() {
       setModels(result.models ?? []);
       setLlmToDownload("");
       setEmbeddingToDownload("");
-      setMessage(language === "tr" ? "Model indirildi. Asagidaki listelerden secebilirsiniz." : "Model downloaded. You can select it below.");
+      setMessage(language === "tr" ? "Model indirildi. Aşağıdaki listelerden seçebilirsiniz." : "Model downloaded. You can select it below.");
       return true;
     } catch (error) {
       setMessage(error instanceof Error && error.message ? error.message : language === "tr" ? "Model indirilemedi." : "Model could not be downloaded.");
@@ -102,12 +103,31 @@ export function SettingsPanel() {
     try {
       const response = await fetch(`${apiBaseUrl}/api/settings/providers/${provider}/key`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ apiKey }) });
       if (!response.ok) throw new Error("API key could not be saved.");
-      setCloudModels((current) => ({ ...current, [provider]: { ...current[provider], configured: true } }));
+      const settingsResponse = await fetch(`${apiBaseUrl}/api/settings/models`);
+      if (!settingsResponse.ok) throw new Error("Model list could not be refreshed.");
+      const settings = await settingsResponse.json() as { models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] } };
+      setModels(settings.models);
+      setCloudModels({ openai: settings.openai, gemini: settings.gemini });
       setApiKey("");
-      setMessage(language === "tr" ? "API anahtari eklendi." : "API key added.");
+      const providerModels = settings[provider];
+      setMessage(language === "tr" ? `API anahtarı eklendi. ${providerModels.llmModels.length} LLM ve ${providerModels.embeddingModels.length} embedding modeli yüklendi.` : `API key added. ${providerModels.llmModels.length} LLM and ${providerModels.embeddingModels.length} embedding models loaded.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "API key could not be saved.");
     } finally { setSavingApiKey(false); }
+  }
+
+  function selectLlmProvider(provider: string) {
+    setLlmProvider(provider);
+    setApiKey("");
+    const options = provider === "ollama" ? installedLlmOptions : cloudModels[provider as "openai" | "gemini"].llmModels;
+    if (options[0]) setLlmModel(typeof options[0] === "string" ? options[0] : options[0].value);
+  }
+
+  function selectEmbeddingProvider(provider: string) {
+    setEmbeddingProvider(provider);
+    setApiKey("");
+    const options = provider === "ollama" ? installedEmbeddingOptions : cloudModels[provider as "openai" | "gemini"].embeddingModels;
+    if (options[0]) setEmbeddingModel(typeof options[0] === "string" ? options[0] : options[0].value);
   }
 
   const installedLlmOptions = models
@@ -122,20 +142,27 @@ export function SettingsPanel() {
     .filter((model) => model.kind === downloadDialog)
     .filter((model) => model.name.toLocaleLowerCase().includes(modelFilter.trim().toLocaleLowerCase()));
   const selectedDownloadModel = downloadDialog === "llm" ? llmToDownload : embeddingToDownload;
+  const tabItems = [
+    { label: language === "tr" ? "Genel" : "General", icon: "pi pi-cog" },
+    { label: "LLM", icon: "pi pi-sparkles" },
+    { label: "Embedding", icon: "pi pi-search" }
+  ];
 
   return (
     <section className="settings-panel panel">
       <div>
-        <h3>{language === "tr" ? "Platform ayarlari" : "Platform settings"}</h3>
+        <h3>{language === "tr" ? "Platform ayarları" : "Platform settings"}</h3>
         <p>
           {language === "tr"
-            ? "Platform tercihlerini buradan yonetin. Yeni ayarlar bu alana eklenecek."
+            ? "Platform tercihlerini buradan yönetin. Yeni ayarlar bu alana eklenecek."
             : "Manage platform preferences here. New settings will be added to this area."}
         </p>
       </div>
 
+      <ATabMenu model={tabItems} activeIndex={activeTab} onTabChange={(event) => setActiveTab(event.index)} />
+
       <div className="settings-fields">
-        <label>
+        {activeTab === 0 ? <label>
           {language === "tr" ? "Platform dili" : "Platform language"}
           <ADropdown
             value={draftLanguage}
@@ -145,16 +172,16 @@ export function SettingsPanel() {
               setMessage("");
             }}
           />
-        </label>
+        </label> : null}
 
-        <label>
-          {language === "tr" ? "LLM saglayicisi" : "LLM provider"}
-          <ADropdown value={llmProvider} options={providerOptions} onChange={(event) => { setLlmProvider(String(event.value)); setApiKey(""); }} />
-        </label>
+        {activeTab === 1 ? <label>
+          {language === "tr" ? "LLM sağlayıcısı" : "LLM provider"}
+          <ADropdown value={llmProvider} options={providerOptions} onChange={(event) => selectLlmProvider(String(event.value))} />
+        </label> : null}
 
-        {llmProvider !== "ollama" && !cloudModels[llmProvider as "openai" | "gemini"].configured ? <div className="settings-api-key"><AInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={`${llmProvider === "openai" ? "OpenAI" : "Gemini"} API key`} /><AButton onClick={() => void saveApiKey(llmProvider as "openai" | "gemini")} disabled={savingApiKey || !apiKey.trim()}>{language === "tr" ? "Anahtari ekle" : "Add key"}</AButton></div> : null}
+        {activeTab === 1 && llmProvider !== "ollama" ? <div className="settings-api-key"><AInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={cloudModels[llmProvider as "openai" | "gemini"].configured ? "••••••••••••••••" : `${llmProvider === "openai" ? "OpenAI" : "Gemini"} API key`} /><AButton onClick={() => void saveApiKey(llmProvider as "openai" | "gemini")} disabled={savingApiKey || !apiKey.trim()}>{cloudModels[llmProvider as "openai" | "gemini"].configured ? (language === "tr" ? "Güncelle" : "Update") : language === "tr" ? "Ekle" : "Add"}</AButton></div> : null}
 
-        <label>
+        {activeTab === 1 ? <label>
           {language === "tr" ? "LLM modeli" : "LLM model"}
           <div className="settings-model-control">
             <ADropdown value={llmModel} options={llmOptions} disabled={loading || (llmProvider !== "ollama" && !cloudModels[llmProvider as "openai" | "gemini"].configured)} onChange={(event) => setLlmModel(String(event.value))} />
@@ -162,14 +189,16 @@ export function SettingsPanel() {
               <i className="pi pi-plus" aria-hidden="true" />
             </AButton> : null}
           </div>
-        </label>
+        </label> : null}
 
-        <label>
-          {language === "tr" ? "Embedding saglayicisi" : "Embedding provider"}
-          <ADropdown value={embeddingProvider} options={providerOptions} onChange={(event) => setEmbeddingProvider(String(event.value))} />
-        </label>
+        {activeTab === 2 ? <label>
+          {language === "tr" ? "Embedding sağlayıcısı" : "Embedding provider"}
+          <ADropdown value={embeddingProvider} options={providerOptions} onChange={(event) => selectEmbeddingProvider(String(event.value))} />
+        </label> : null}
 
-        <label>
+        {activeTab === 2 && embeddingProvider !== "ollama" ? <div className="settings-api-key"><AInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={cloudModels[embeddingProvider as "openai" | "gemini"].configured ? "••••••••••••••••" : `${embeddingProvider === "openai" ? "OpenAI" : "Gemini"} API key`} /><AButton onClick={() => void saveApiKey(embeddingProvider as "openai" | "gemini")} disabled={savingApiKey || !apiKey.trim()}>{cloudModels[embeddingProvider as "openai" | "gemini"].configured ? (language === "tr" ? "Güncelle" : "Update") : language === "tr" ? "Ekle" : "Add"}</AButton></div> : null}
+
+        {activeTab === 2 ? <label>
           {language === "tr" ? "Embedding modeli" : "Embedding model"}
           <div className="settings-model-control">
             <ADropdown value={embeddingModel} options={embeddingOptions} disabled={loading || (embeddingProvider !== "ollama" && !cloudModels[embeddingProvider as "openai" | "gemini"].configured)} onChange={(event) => setEmbeddingModel(String(event.value))} />
@@ -177,7 +206,7 @@ export function SettingsPanel() {
               <i className="pi pi-plus" aria-hidden="true" />
             </AButton> : null}
           </div>
-        </label>
+        </label> : null}
       </div>
 
       <div className="button-row">
@@ -188,7 +217,7 @@ export function SettingsPanel() {
 
       <p className="settings-note">
         {language === "tr"
-          ? "Model secimleri API calisirken hemen uygulanir. Embedding modelini degistirdikten sonra anlamsal arama icin belgeleri yeniden indeksleyin."
+          ? "Model seçimleri API çalışırken hemen uygulanır. Embedding modelini değiştirdikten sonra anlamsal arama için belgeleri yeniden indeksleyin."
           : "Model selections take effect immediately while the API is running. Reindex documents after changing the embedding model for semantic search."}
       </p>
       {message ? <p className="form-message">{message}</p> : null}
@@ -197,17 +226,17 @@ export function SettingsPanel() {
         onHide={() => !downloading && setDownloadDialog(null)}
         header={downloadDialog === "embedding" ? (language === "tr" ? "Embedding modeli indir" : "Download embedding model") : language === "tr" ? "LLM modeli indir" : "Download LLM model"}
         style={{ width: "min(520px, calc(100vw - 32px))" }}
-        footer={<div className="button-row"><AButton tone="secondary" onClick={() => setDownloadDialog(null)} disabled={downloading}>{language === "tr" ? "Vazgec" : "Cancel"}</AButton><AButton disabled={downloading || !selectedDownloadModel} onClick={() => { void downloadModel(selectedDownloadModel).then((success) => success && setDownloadDialog(null)); }}>{downloading ? (language === "tr" ? "Indiriliyor..." : "Downloading...") : language === "tr" ? "Indir" : "Download"}</AButton></div>}
+        footer={<div className="button-row"><AButton tone="secondary" onClick={() => setDownloadDialog(null)} disabled={downloading}>{language === "tr" ? "Vazgeç" : "Cancel"}</AButton><AButton disabled={downloading || !selectedDownloadModel} onClick={() => { void downloadModel(selectedDownloadModel).then((success) => success && setDownloadDialog(null)); }}>{downloading ? (language === "tr" ? "İndiriliyor..." : "Downloading...") : language === "tr" ? "İndir" : "Download"}</AButton></div>}
       >
-        <p>{language === "tr" ? "Ollama kutuphanesinden bir model secin." : "Choose a model from the Ollama library."}</p>
+        <p>{language === "tr" ? "Ollama kütüphanesinden bir model seçin." : "Choose a model from the Ollama library."}</p>
         <AInput value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder={language === "tr" ? "Model ara" : "Search models"} disabled={downloading} />
         <div className="model-download-list" role="listbox" aria-label={language === "tr" ? "Model listesi" : "Model list"}>
           {dialogModels.map((model) => {
             const selected = selectedDownloadModel === model.name;
             const installed = models.some((installedModel) => installedModel.replace(/:.+$/, "") === model.name);
-            return <button key={model.name} type="button" role="option" aria-selected={selected} className={`model-download-list__item${selected ? " is-selected" : ""}`} disabled={downloading} onClick={() => downloadDialog === "llm" ? setLlmToDownload(model.name) : setEmbeddingToDownload(model.name)}><span className="model-download-list__heading"><strong>{model.name}</strong>{installed ? <small>{language === "tr" ? "Yuklu" : "Installed"}</small> : null}</span><span className="model-download-list__description">{model.description}</span><span className="model-download-list__chips">{[...model.capabilities, ...model.sizes].map((tag) => <small key={tag}>{tag}</small>)}</span><span className="model-download-list__meta">{model.pulls ? <small><i className="pi pi-download" /> {model.pulls} Pulls</small> : null}{model.tags ? <small><i className="pi pi-tag" /> {model.tags} Tags</small> : null}{model.updated ? <small><i className="pi pi-clock" /> {model.updated}</small> : null}</span></button>;
+            return <button key={model.name} type="button" role="option" aria-selected={selected} className={`model-download-list__item${selected ? " is-selected" : ""}`} disabled={downloading} onClick={() => downloadDialog === "llm" ? setLlmToDownload(model.name) : setEmbeddingToDownload(model.name)}><span className="model-download-list__heading"><strong>{model.name}</strong>{installed ? <small>{language === "tr" ? "Yüklü" : "Installed"}</small> : null}</span><span className="model-download-list__description">{model.description}</span><span className="model-download-list__chips">{[...model.capabilities, ...model.sizes].map((tag) => <small key={tag}>{tag}</small>)}</span><span className="model-download-list__meta">{model.pulls ? <small><i className="pi pi-download" /> {model.pulls} Pulls</small> : null}{model.tags ? <small><i className="pi pi-tag" /> {model.tags} Tags</small> : null}{model.updated ? <small><i className="pi pi-clock" /> {model.updated}</small> : null}</span></button>;
           })}
-          {dialogModels.length === 0 ? <p className="model-download-list__empty">{language === "tr" ? "Eslesen model bulunamadi." : "No matching models found."}</p> : null}
+          {dialogModels.length === 0 ? <p className="model-download-list__empty">{language === "tr" ? "Eşleşen model bulunamadı." : "No matching models found."}</p> : null}
         </div>
       </ADialog>
     </section>
