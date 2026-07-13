@@ -221,7 +221,7 @@ a {
   gap: 28px;
   min-height: 0;
   overflow: hidden;
-  padding: 28px;
+  padding: 20px;
   transition: padding 180ms ease;
 }
 
@@ -324,6 +324,16 @@ a {
   padding: 10px;
 }
 
+.is-sidebar-collapsed .sidebar .a-icon__glyph {
+  font-size: 18px;
+  height: 20px;
+  width: 20px;
+}
+
+.is-sidebar-collapsed .sidebar .a-icon__glyph .pi {
+  font-size: 18px;
+}
+
 .a-icon {
   cursor: pointer;
   display: inline-flex;
@@ -421,6 +431,36 @@ a {
   gap: 24px;
 }
 
+.settings-layout {
+  align-items: start;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 760px) minmax(340px, 1fr);
+}
+
+.settings-layout .settings-panel,
+.settings-layout .transfer-panel {
+  width: 100%;
+}
+
+.settings-layout .panel h3 {
+  color: var(--accent-strong);
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+
+.settings-layout .transfer-panel {
+  gap: 24px;
+}
+
+@media (max-width: 1180px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .settings-fields {
   display: grid;
   gap: 16px;
@@ -435,6 +475,10 @@ a {
   align-items: center;
   display: flex;
   gap: 8px;
+}
+
+.a-tab-menu .p-tabmenu-nav {
+  border-color: var(--line);
 }
 
 .settings-model-control .p-dropdown {
@@ -456,6 +500,17 @@ a {
 
 .settings-api-key .a-input {
   min-width: 0;
+}
+
+.chat-active-model {
+  align-items: center;
+  background: var(--pt-primary-soft);
+  border-radius: 999px;
+  color: var(--accent-strong);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+  padding: 5px 9px;
 }
 
 .model-download-list {
@@ -718,10 +773,11 @@ label {
   display: grid;
   gap: 14px;
   grid-template-columns: 200px minmax(0, 1fr);
-  height: calc(100dvh - 173px);
+  height: calc(100dvh - 110px);
   margin: -8px 0 -20px -32px;
   max-width: none;
-  min-height: 520px;
+  min-height: 0;
+  overflow: hidden;
   width: calc(100% + 32px);
 }
 
@@ -798,7 +854,7 @@ label {
   margin: 0;
   justify-self: center;
   max-width: 900px;
-  min-height: 520px;
+  min-height: 0;
   width: 100%;
 }
 
@@ -871,6 +927,11 @@ label {
 .chat-send { align-items: center; background: var(--accent); border: 0; border-radius: 10px; color: #fff; cursor: pointer; display: inline-flex; flex: 0 0 34px; height: 34px; justify-content: center; padding: 0; }
 .chat-send:hover:not(:disabled) { background: var(--accent-strong); }.chat-send:disabled { cursor: not-allowed; opacity: .35; }
 .chat-composer__hint, .chat-error { color: var(--muted); font-size: 11px; margin: 8px 0 0; text-align: center; }.chat-error { color: #9f1239; font-weight: 700; }
+
+.chat-composer-wrap .chat-active-model {
+  margin: 12px auto 0;
+  width: fit-content;
+}
 
 .transfer-panel {
   display: grid;
@@ -1103,8 +1164,14 @@ label {
 }
 
 .entity-card.active {
+  background: var(--pt-primary-soft);
   border-color: var(--accent);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent), 0 2px 8px rgba(75, 103, 138, 0.14);
+  color: var(--accent-strong);
+}
+
+.entity-card.active strong {
+  color: var(--accent-strong);
 }
 
 .entity-card span,
@@ -1311,10 +1378,53 @@ label {
   gap: 8px;
 }
 
-.document-processing > span {
+.document-processing-status > span {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.document-processing-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.document-processing-steps li {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.document-processing-steps li::before {
+  color: var(--line);
+  content: "○";
+  margin-right: 4px;
+}
+
+.document-processing-steps li.is-current {
+  color: var(--brand-strong);
+  font-weight: 600;
+}
+
+.document-processing-steps li.is-current::before {
+  content: "●";
+}
+
+.document-processing-steps li.is-complete {
+  color: var(--accent-strong);
+}
+
+.document-processing-steps li.is-complete::before {
+  content: "";
+  margin: 0;
+}
+
+.document-processing-steps li .pi {
+  font-size: 10px;
+  margin-right: 4px;
 }
 
 .document-meta,
@@ -1657,7 +1767,7 @@ label {
 
   .chat-layout {
     grid-template-columns: 1fr;
-    height: calc(100dvh - 158px);
+    height: calc(100dvh - 96px);
     margin: -8px -12px -20px;
     width: calc(100% + 24px);
   }

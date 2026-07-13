@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { WorkspaceShell } from "../workspace-shell";
 import { sections, type WorkspaceSectionId } from "../workspace-app";
 
@@ -20,6 +20,10 @@ export function generateStaticParams() {
 
 export default async function SectionPage({ params }: SectionPageProps) {
   const { section } = await params;
+
+  if (section === "transfer") {
+    redirect("/settings");
+  }
 
   if (!isWorkspaceSectionId(section)) {
     notFound();

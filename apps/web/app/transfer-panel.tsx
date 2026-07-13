@@ -114,8 +114,12 @@ export function TransferPanel() {
   return (
     <section className="panel transfer-panel">
       <div>
-        <p className="eyebrow">{isEnglish ? "Portability" : "Tasinabilirlik"}</p>
-        <h3>{isEnglish ? "Export, backup, and import" : "Disari aktarma, yedekleme ve ice aktarma"}</h3>
+        <h3>{isEnglish ? "Data transfer" : "Veri aktarımı"}</h3>
+        <p>
+          {isEnglish
+            ? "Export, back up, or import workspace data from here."
+            : "Workspace verilerini buradan dışa aktarın, yedekleyin veya içe aktarın."}
+        </p>
       </div>
 
       <div className="transfer-grid">
@@ -125,7 +129,7 @@ export function TransferPanel() {
             onClick={() => postBundleAction("export-bundle")}
             disabled={isBusy}
           >
-            {isEnglish ? "Export" : "Disari aktar"}
+            {isEnglish ? "Export" : "Dışarı aktar"}
           </AButton>
           <AButton
             type="button"
@@ -161,7 +165,7 @@ export function TransferPanel() {
         </label>
 
         <label>
-          {isEnglish ? "Export bundle" : "Disari aktarma paketi"}
+          {isEnglish ? "Export bundle" : "Dışarı aktarma paketi"}
           <AFileInput
             accept=".json,.knowledgeos-export.json,application/json"
             onChange={(event) => setBundleFile(event.target.files?.[0] ?? null)}
@@ -169,7 +173,7 @@ export function TransferPanel() {
         </label>
 
         <AButton type="button" onClick={importBundle} disabled={isBusy}>
-          {isEnglish ? "Import" : "Ice aktar"}
+          {isEnglish ? "Import" : "İçe aktar"}
         </AButton>
       </div>
 

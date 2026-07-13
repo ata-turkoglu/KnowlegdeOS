@@ -3,7 +3,6 @@ import { DashboardMetrics } from "./dashboard-metrics";
 import { DocumentsPanel } from "./documents-panel";
 import { EntitiesPanel } from "./entities-panel";
 import { SearchPanel } from "./search-panel";
-import { TransferPanel } from "./transfer-panel";
 import { UploadPanel } from "./upload-panel";
 
 export const sections = [
@@ -12,8 +11,7 @@ export const sections = [
   { id: "documents", label: "Documents", icon: "pi-file" },
   { id: "entities", label: "Entities", icon: "pi-sitemap" },
   { id: "search", label: "Search", icon: "pi-search" },
-  { id: "chat", label: "Chat", icon: "pi-comments" },
-  { id: "transfer", label: "Transfer", icon: "pi-sync" }
+  { id: "chat", label: "Chat", icon: "pi-comments" }
 ] as const;
 
 export type WorkspaceSectionId = (typeof sections)[number]["id"];
@@ -30,7 +28,6 @@ export function WorkspaceApp({ activeSection }: WorkspaceAppProps) {
       {activeSection === "entities" ? <EntitiesPanel /> : null}
       {activeSection === "search" ? <SearchPanel /> : null}
       {activeSection === "chat" ? <ChatPanel /> : null}
-      {activeSection === "transfer" ? <TransferPanel /> : null}
       {activeSection === "upload" ? <UploadPanel /> : null}
     </section>
   );

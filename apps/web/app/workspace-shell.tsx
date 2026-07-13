@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AIcon } from "../components/ui";
 import { WorkspaceApp, type WorkspaceSectionId, sections } from "./workspace-app";
 import { WorkspaceProvider } from "./workspace-context";
 import { SettingsPanel } from "./settings-panel";
+import { TransferPanel } from "./transfer-panel";
 import { WorkspaceSwitcher } from "./workspace-switcher";
 import { LanguageProvider, useLanguage } from "./language-context";
 
@@ -25,7 +26,14 @@ export function WorkspaceShell({ activeSection = "dashboard" }: WorkspaceShellPr
 
 function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>) {
   const { language } = useLanguage();
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem("knowledgeos-sidebar-collapsed") !== "false";
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem("knowledgeos-sidebar-collapsed", String(isSidebarCollapsed));
+  }, [isSidebarCollapsed]);
 
   return (
     <WorkspaceProvider>
@@ -35,7 +43,7 @@ function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>)
             type="button"
             className="sidebar__toggle"
             onClick={() => setIsSidebarCollapsed((current) => !current)}
-            aria-label={isSidebarCollapsed ? (language === "tr" ? "Sidebari ac" : "Open sidebar") : language === "tr" ? "Sidebari kapat" : "Close sidebar"}
+            aria-label={isSidebarCollapsed ? (language === "tr" ? "Kenar çubuğunu aç" : "Open sidebar") : language === "tr" ? "Kenar çubuğunu kapat" : "Close sidebar"}
             aria-expanded={!isSidebarCollapsed}
           >
             <span
@@ -49,7 +57,7 @@ function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>)
         <div className={isSidebarCollapsed ? "app-shell is-sidebar-collapsed" : "app-shell"}>
           <aside className="sidebar">
             {!isSidebarCollapsed ? <WorkspaceSwitcher /> : null}
-          <nav aria-label={language === "tr" ? "Workspace bolumleri" : "Workspace sections"}>
+          <nav aria-label={language === "tr" ? "Workspace bölümleri" : "Workspace sections"}>
             {sections.map((section) => {
               const isActive = activeSection === section.id;
 
@@ -67,7 +75,7 @@ function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>)
               );
             })}
           </nav>
-          <nav className="sidebar__bottom-nav" aria-label={language === "tr" ? "Platform ayarlari" : "Platform settings"}>
+          <nav className="sidebar__bottom-nav" aria-label={language === "tr" ? "Platform ayarları" : "Platform settings"}>
             <Link
               href="/settings"
               className={activeSection === "settings" ? "active" : ""}
@@ -81,7 +89,12 @@ function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>)
           </aside>
 
           <section className="content">
-            {activeSection === "settings" ? <SettingsPanel /> : <WorkspaceApp activeSection={activeSection} />}
+            {activeSection === "settings" ? (
+              <div className="settings-layout">
+                <SettingsPanel />
+                <TransferPanel />
+              </div>
+            ) : <WorkspaceApp activeSection={activeSection} />}
           </section>
         </div>
       </main>
@@ -92,12 +105,11 @@ function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>)
 function sectionLabel(section: WorkspaceSectionId, language: "tr" | "en") {
   const labels: Record<WorkspaceSectionId, Record<"tr" | "en", string>> = {
     dashboard: { tr: "Panel", en: "Dashboard" },
-    upload: { tr: "Yukle", en: "Upload" },
+    upload: { tr: "Yükle", en: "Upload" },
     documents: { tr: "Belgeler", en: "Documents" },
-    entities: { tr: "Varliklar", en: "Entities" },
+    entities: { tr: "Varlıklar", en: "Entities" },
     search: { tr: "Arama", en: "Search" },
     chat: { tr: "Sohbet", en: "Chat" },
-    transfer: { tr: "Aktarim", en: "Transfer" }
   };
 
   return labels[section][language];
