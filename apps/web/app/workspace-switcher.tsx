@@ -72,7 +72,7 @@ export function WorkspaceSwitcher() {
           value={workspaceSlug}
           options={options}
           onChange={(event) => setWorkspaceSlug(String(event.value))}
-          placeholder={isLoading ? (language === "tr" ? "Workspace yukleniyor..." : "Loading workspaces...") : language === "tr" ? "Workspace sec" : "Select workspace"}
+          placeholder={isLoading ? (language === "tr" ? "Workspace yükleniyor..." : "Loading workspaces...") : language === "tr" ? "Workspace seç" : "Select workspace"}
           disabled={isLoading || options.length === 0}
           className="workspace-switcher__dropdown"
         />
@@ -100,7 +100,7 @@ export function WorkspaceSwitcher() {
             />
           </label>
           <label>
-            {language === "tr" ? "Aciklama" : "Description"}
+            {language === "tr" ? "Açıklama" : "Description"}
             <AInput
               value={description}
               onChange={(event) => setDescription(event.target.value)}
@@ -108,7 +108,7 @@ export function WorkspaceSwitcher() {
             />
           </label>
           <AButton type="button" onClick={handleCreateWorkspace} disabled={isSaving}>
-            {isSaving ? (language === "tr" ? "Olusturuluyor..." : "Creating...") : language === "tr" ? "Olustur" : "Create"}
+            {isSaving ? (language === "tr" ? "Oluşturuluyor..." : "Creating...") : language === "tr" ? "Oluştur" : "Create"}
           </AButton>
         </div>
       ) : null}

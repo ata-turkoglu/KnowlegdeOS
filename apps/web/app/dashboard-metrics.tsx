@@ -62,7 +62,7 @@ export function DashboardMetrics() {
   }, [workspaceSlug]);
 
   return (
-    <section className="dashboard-panel" aria-label={isEnglish ? "Archive summary" : "Arsiv ozeti"}>
+    <section className="dashboard-panel" aria-label={isEnglish ? "Archive summary" : "Arşiv özeti"}>
       <div className="dashboard-toolbar">
         <AButton type="button" onClick={() => loadSummary()} disabled={isLoading}>
           {isLoading ? (isEnglish ? "Loading..." : "Yükleniyor...") : isEnglish ? "Refresh" : "Yenile"}
@@ -71,7 +71,7 @@ export function DashboardMetrics() {
 
       <div className="metrics">
         <div>
-          <span>{isEnglish ? "Workspaces" : "Calisma alanlari"}</span>
+          <span>{isEnglish ? "Workspaces" : "Çalışma alanları"}</span>
           <strong>{summary.workspaceCount}</strong>
         </div>
         <div>
@@ -80,7 +80,7 @@ export function DashboardMetrics() {
           <small>{summary.indexedDocumentCount} {isEnglish ? "indexed" : "indeksli"}</small>
         </div>
         <div>
-          <span>{isEnglish ? "Entities" : "Varliklar"}</span>
+          <span>{isEnglish ? "Entities" : "Varlıklar"}</span>
           <strong>{summary.entityCount}</strong>
         </div>
         <div>

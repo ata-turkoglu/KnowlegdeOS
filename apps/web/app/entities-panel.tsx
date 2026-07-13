@@ -231,7 +231,7 @@ export function EntitiesPanel() {
       <div className="entities-header">
         <div>
           <p className="eyebrow">{isEnglish ? "Entity management" : "Varlık yönetimi"}</p>
-          <h3>{isEnglish ? "Entities" : "Varliklar"} ({entities.length})</h3>
+          <h3>{isEnglish ? "Entities" : "Varlıklar"} ({entities.length})</h3>
         </div>
         <div className="entities-toolbar">
           <div className="button-row">
@@ -244,7 +244,7 @@ export function EntitiesPanel() {
               onClick={rebuildEntities}
               disabled={Boolean(activeAction)}
             >
-              {activeAction === "rebuild" ? (isEnglish ? "Processing..." : "Isleniyor...") : isEnglish ? "Rebuild" : "Yeniden olustur"}
+              {activeAction === "rebuild" ? (isEnglish ? "Processing..." : "İşleniyor...") : isEnglish ? "Rebuild" : "Yeniden oluştur"}
             </AButton>
           </div>
         </div>
@@ -332,8 +332,8 @@ export function EntitiesPanel() {
 
       <div className="merge-panel">
         <div>
-          <p className="eyebrow">{isEnglish ? "Merge" : "Birlestir"}</p>
-          <strong>{isEnglish ? "Merge entities" : "Varlik birlestirme"}</strong>
+          <p className="eyebrow">{isEnglish ? "Merge" : "Birleştir"}</p>
+          <strong>{isEnglish ? "Merge entities" : "Varlık birleştirme"}</strong>
         </div>
         <label>
           {isEnglish ? "Source" : "Kaynak"}
@@ -363,7 +363,7 @@ export function EntitiesPanel() {
             mergeSourceId === mergeTargetId
           }
         >
-          {activeAction === "merge" ? (isEnglish ? "Merging..." : "Birlestiriliyor...") : isEnglish ? "Merge" : "Birlestir"}
+          {activeAction === "merge" ? (isEnglish ? "Merging..." : "Birleştiriliyor...") : isEnglish ? "Merge" : "Birleştir"}
         </AButton>
       </div>
 

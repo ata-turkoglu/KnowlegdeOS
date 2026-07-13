@@ -118,6 +118,21 @@ function formatReindexStage(stage: string, isEnglish: boolean) {
   return stages[stage]?.[isEnglish ? 1 : 0] ?? stage;
 }
 
+const reindexStages = [
+  "Preparing document",
+  "Waiting for AI response",
+  "Saving index",
+  "Updating entity index"
+];
+
+function getReindexStageIndex(stage: string) {
+  if (stage === "Completed") {
+    return reindexStages.length;
+  }
+
+  return reindexStages.indexOf(stage);
+}
+
 export function DocumentsPanel() {
   const { language } = useLanguage();
   const isEnglish = language === "en";
@@ -329,7 +344,23 @@ export function DocumentsPanel() {
                 <div className="document-actions">
                   {activeDocument === document.documentName ? (
                     <div className="document-processing">
-                      <span><i className="pi pi-spin pi-spinner" aria-hidden="true" /> {formatReindexStage(reindexStage || "Starting reindexing", isEnglish)}</span>
+                      <div className="document-processing-status">
+                        <span><i className="pi pi-spin pi-spinner" aria-hidden="true" /> {formatReindexStage(reindexStage || "Starting reindexing", isEnglish)}</span>
+                        <ol className="document-processing-steps" aria-label={isEnglish ? "Reindexing progress" : "Yeniden indeksleme ilerlemesi"}>
+                          {reindexStages.map((stage, index) => {
+                            const currentStageIndex = getReindexStageIndex(reindexStage);
+                            const isComplete = currentStageIndex > index;
+                            const isCurrent = currentStageIndex === index;
+
+                            return (
+                              <li key={stage} className={isComplete ? "is-complete" : isCurrent ? "is-current" : undefined}>
+                                {isComplete ? <i className="pi pi-check" aria-hidden="true" /> : null}
+                                {formatReindexStage(stage, isEnglish)}
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </div>
                       <AButton
                         className="document-cancel p-button-outlined"
                         type="button"
@@ -397,7 +428,7 @@ export function DocumentsPanel() {
         <div className="document-detail-panel">
           <div className="document-detail-heading">
             <div>
-              <p className="eyebrow">{isEnglish ? "Preview" : "Onizleme"}</p>
+              <p className="eyebrow">{isEnglish ? "Preview" : "Önizleme"}</p>
               <strong>{selectedDocument.filename}</strong>
               <span>{selectedDocument.title}</span>
             </div>

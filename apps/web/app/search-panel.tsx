@@ -120,7 +120,7 @@ export function SearchPanel() {
     <section className="panel search-panel">
       <div>
         <p className="eyebrow">{isEnglish ? "Search" : "Arama"}</p>
-        <h3>{isEnglish ? "Entity, semantic, and hybrid search" : "Varlik, anlamsal ve hibrit arama"}</h3>
+        <h3>{isEnglish ? "Entity, semantic, and hybrid search" : "Varlık, anlamsal ve hibrit arama"}</h3>
       </div>
 
       <div className="search-workbench">

@@ -69,7 +69,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         setError(
           !Array.isArray(body) && body.error
             ? body.error
-            : "Workspace listesi alinamadi."
+            : "Workspace listesi alınamadı."
         );
         setWorkspaces([]);
         return;
@@ -99,7 +99,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         setWorkspaceSlug(defaultWorkspace?.slug ?? body[0].slug);
       }
     } catch {
-      setError("Workspace listesi alinamadi.");
+      setError("Workspace listesi alınamadı.");
       setWorkspaces([]);
     } finally {
       setIsLoading(false);
@@ -128,7 +128,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const message =
           !Array.isArray(body) && "error" in body && body.error
             ? body.error
-            : "Workspace olusturulamadi.";
+            : "Workspace oluşturulamadı.";
         throw new Error(message);
       }
 

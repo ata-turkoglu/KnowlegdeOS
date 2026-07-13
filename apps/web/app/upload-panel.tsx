@@ -187,7 +187,7 @@ export function UploadPanel() {
       <div className="panel upload-panel upload-card">
         <div className="upload-heading">
           <div>
-            <p className="eyebrow">{isEnglish ? "Upload" : "Yukle"}</p>
+            <p className="eyebrow">{isEnglish ? "Upload" : "Yükle"}</p>
             <h3>{isEnglish ? "Markdown working copy" : "Markdown çalışma kopyası"}</h3>
           </div>
           <AButton type="button" tone="secondary" onClick={() => setShowOcrHelp(true)}>
