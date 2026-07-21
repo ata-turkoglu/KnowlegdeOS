@@ -168,6 +168,8 @@ export function TransferPanel() {
           {isEnglish ? "Export bundle" : "Dışarı aktarma paketi"}
           <AFileInput
             accept=".json,.knowledgeos-export.json,application/json"
+            chooseLabel={isEnglish ? "Choose file" : "Dosya seç"}
+            emptyLabel={isEnglish ? "No file selected" : "Dosya seçilmedi"}
             onChange={(event) => setBundleFile(event.target.files?.[0] ?? null)}
           />
         </label>

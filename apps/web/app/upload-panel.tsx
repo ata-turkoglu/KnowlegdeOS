@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { AButton, ADialog, AFileInput, AInput, ATextarea } from "../components/ui";
+import { useState } from "react";
+import { AButton, ADialog, AFileInput, AIcon, ATextarea } from "../components/ui";
 import { useLanguage } from "./language-context";
+import { ocrMarkdownPrompt } from "./ocr-markdown-prompt";
 import { useWorkspace } from "./workspace-context";
 
 const apiBaseUrl = "http://127.0.0.1:4000";
@@ -39,38 +40,29 @@ type UploadedDocument = {
   metadataPath: string;
 };
 
+type UploadConflictStatus = "NEW" | "DUPLICATE" | "CONFLICT";
+
 export function UploadPanel() {
   const { language } = useLanguage();
   const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
-  const [prompt, setPrompt] = useState("");
   const [showExample, setShowExample] = useState(false);
   const [showOcrHelp, setShowOcrHelp] = useState(false);
   const [markdownFiles, setMarkdownFiles] = useState<File[]>([]);
-  const [originalFile, setOriginalFile] = useState<File | null>(null);
+  const [fileStatuses, setFileStatuses] = useState<UploadConflictStatus[]>([]);
   const [preview, setPreview] = useState("");
   const [previewFileIndex, setPreviewFileIndex] = useState(0);
-  const [title, setTitle] = useState("");
   const [uploadedDocuments, setUploadedDocuments] = useState<UploadedDocument[]>([]);
   const [message, setMessage] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
 
-  const promptPreview = useMemo(
-    () => prompt || (isEnglish ? "Loading prompt..." : "Prompt yükleniyor..."),
-    [isEnglish, prompt]
-  );
-
-  useEffect(() => {
-    fetch(`${apiBaseUrl}/api/prompts/ocr-markdown`)
-      .then((response) => response.json())
-      .then((data: { prompt: string }) => setPrompt(data.prompt))
-      .catch(() => setPrompt("OCR promptu API'den alınamadı."));
-  }, []);
+  const hasConflicts = fileStatuses.includes("CONFLICT");
 
   async function handleMarkdownChange(files: FileList | null) {
     const selectedFiles = files ? Array.from(files) : [];
     setMarkdownFiles(selectedFiles);
+    setFileStatuses([]);
     setPreviewFileIndex(0);
     setUploadedDocuments([]);
     setMessage("");
@@ -81,9 +73,19 @@ export function UploadPanel() {
     }
 
     setPreview(await selectedFiles[0].text());
-    setTitle(
-      selectedFiles.length === 1 ? selectedFiles[0].name.replace(/\.(md|txt)$/i, "") : ""
-    );
+    try {
+      const files = await Promise.all(selectedFiles.map(async (file) => ({ filename: file.name, hash: await fileHash(file) })));
+      const response = await fetch(`${apiBaseUrl}/api/documents/conflicts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaceSlug, files })
+      });
+      if (!response.ok) throw new Error("Conflict check failed.");
+      const conflicts = await response.json() as Array<{ status: UploadConflictStatus }>;
+      setFileStatuses(conflicts.map((conflict) => conflict.status));
+    } catch {
+      setMessage(isEnglish ? "Existing-file check could not be completed." : "Mevcut dosya kontrolü tamamlanamadı.");
+    }
   }
 
   async function selectPreviewFile(index: number) {
@@ -98,8 +100,20 @@ export function UploadPanel() {
   }
 
   async function copyPrompt() {
-    await navigator.clipboard.writeText(prompt);
+    await navigator.clipboard.writeText(ocrMarkdownPrompt);
     setMessage(isEnglish ? "Prompt copied." : "Prompt kopyalandı.");
+  }
+
+  function conflictLabel(status: UploadConflictStatus) {
+    if (status === "DUPLICATE") return isEnglish ? "Already exists" : "Zaten mevcut";
+    if (status === "CONFLICT") return isEnglish ? "Same name, different content" : "Aynı ad, farklı içerik";
+    return isEnglish ? "New" : "Yeni";
+  }
+
+  function conflictIcon(status: UploadConflictStatus) {
+    if (status === "DUPLICATE") return <i className="pi pi-copy" />;
+    if (status === "CONFLICT") return <i className="pi pi-exclamation-triangle" />;
+    return <i className="pi pi-check-circle" />;
   }
 
   async function uploadDocuments() {
@@ -114,14 +128,6 @@ export function UploadPanel() {
     const formData = new FormData();
     formData.append("workspaceSlug", workspaceSlug);
     markdownFiles.forEach((file) => formData.append("markdown", file));
-
-    if (markdownFiles.length === 1) {
-      formData.append("title", title);
-
-      if (originalFile) {
-        formData.append("original", originalFile);
-      }
-    }
 
     const response = await fetch(
       `${apiBaseUrl}/api/documents/${markdownFiles.length === 1 ? "upload" : "upload-batch"}`,
@@ -197,30 +203,21 @@ export function UploadPanel() {
 
         <div className="upload-fields">
           <label>
-            {isEnglish ? "Document title" : "Belge başlığı"}
-            <AInput value={title} onChange={(event) => setTitle(event.target.value)} />
-          </label>
-
-          <label>
             {isEnglish ? "Markdown files" : "Markdown dosyaları"}
             <AFileInput
               accept=".md,.txt,text/markdown,text/plain"
               multiple
+              chooseLabel={isEnglish ? "Choose files" : "Dosya seç"}
+              emptyLabel={isEnglish ? "No files selected" : "Dosya seçilmedi"}
+              multipleSelectedLabel={(count) => isEnglish ? `${count} files selected` : `${count} dosya seçildi`}
               onChange={(event) => handleMarkdownChange(event.target.files)}
             />
           </label>
 
-          <label>
-            {isEnglish ? "Original scan (when one Markdown file is selected)" : "Orijinal tarama dosyası (tek Markdown seçildiğinde)"}
-            <AFileInput
-              accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,application/pdf,image/*"
-              onChange={(event) => setOriginalFile(event.target.files?.[0] ?? null)}
-            />
-          </label>
-
-          <AButton className="upload-submit" type="button" onClick={uploadDocuments} disabled={isUploading}>
+          <AButton className="upload-submit" type="button" onClick={uploadDocuments} disabled={isUploading || hasConflicts}>
             {isUploading ? (isEnglish ? "Uploading..." : "Yükleniyor...") : isEnglish ? "Upload Markdown files" : "Markdown dosyalarını yükle"}
           </AButton>
+          {hasConflicts ? <p className="form-message">{isEnglish ? "Rename or remove files marked as conflicting before uploading." : "Yüklemeden önce çakışan olarak işaretlenen dosyaları yeniden adlandırın veya kaldırın."}</p> : null}
         </div>
 
         {uploadedDocuments.length > 0 ? (
@@ -269,10 +266,10 @@ export function UploadPanel() {
           </p>
         </div>
 
-        <ATextarea readOnly value={promptPreview} aria-label={isEnglish ? "OCR Markdown prompt" : "OCR Markdown promptu"} rows={12} />
+        <ATextarea readOnly value={ocrMarkdownPrompt} aria-label={isEnglish ? "OCR Markdown prompt" : "OCR Markdown promptu"} rows={12} />
 
         <div className="button-row">
-          <AButton type="button" onClick={copyPrompt} disabled={!prompt}>
+          <AButton type="button" onClick={copyPrompt}>
             {isEnglish ? "Copy prompt" : "Promptu kopyala"}
           </AButton>
           <AButton
@@ -295,15 +292,19 @@ export function UploadPanel() {
         <div className="preview-content">
           <aside className="preview-file-list" aria-label={isEnglish ? "Uploaded files" : "Yüklenen dosyalar"}>
             <strong>{isEnglish ? "Files" : "Dosyalar"}</strong>
+            <div className="upload-conflict-legend" aria-label={isEnglish ? "File status legend" : "Dosya durumu açıklaması"}>
+              {(["NEW", "DUPLICATE", "CONFLICT"] as const).map((status) => <span key={status} className={`upload-conflict upload-conflict--${status.toLowerCase()}`}><i aria-hidden="true" />{conflictLabel(status)}</span>)}
+            </div>
             {markdownFiles.length > 0 ? (
               markdownFiles.map((file, index) => (
                 <button
                   key={`${file.name}-${file.lastModified}`}
                   type="button"
-                  className={index === previewFileIndex ? "is-active" : undefined}
+                  className={[index === previewFileIndex ? "is-active" : "", fileStatuses[index] ? `preview-file-list__item--${fileStatuses[index].toLowerCase()}` : ""].filter(Boolean).join(" ") || undefined}
                   onClick={() => void selectPreviewFile(index)}
                 >
-                  {file.name}
+                  <span>{file.name}</span>
+                  {fileStatuses[index] ? <AIcon className={`upload-conflict upload-conflict--${fileStatuses[index].toLowerCase()}`} icon={conflictIcon(fileStatuses[index])} tooltip={conflictLabel(fileStatuses[index])} /> : null}
                 </button>
               ))
             ) : (
@@ -321,4 +322,9 @@ export function UploadPanel() {
       </div>
     </section>
   );
+}
+
+async function fileHash(file: File) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

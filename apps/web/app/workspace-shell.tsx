@@ -26,14 +26,23 @@ export function WorkspaceShell({ activeSection = "dashboard" }: WorkspaceShellPr
 
 function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>) {
   const { language } = useLanguage();
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem("knowledgeos-sidebar-collapsed") !== "false";
-  });
+  // The initial render must be identical on the server and browser. Read the
+  // saved preference only after hydration to avoid a markup mismatch.
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const [hasLoadedSidebarPreference, setHasLoadedSidebarPreference] = useState(false);
 
   useEffect(() => {
-    window.localStorage.setItem("knowledgeos-sidebar-collapsed", String(isSidebarCollapsed));
-  }, [isSidebarCollapsed]);
+    setIsSidebarCollapsed(
+      window.localStorage.getItem("knowledgeos-sidebar-collapsed") !== "false"
+    );
+    setHasLoadedSidebarPreference(true);
+  }, []);
+
+  useEffect(() => {
+    if (hasLoadedSidebarPreference) {
+      window.localStorage.setItem("knowledgeos-sidebar-collapsed", String(isSidebarCollapsed));
+    }
+  }, [hasLoadedSidebarPreference, isSidebarCollapsed]);
 
   return (
     <WorkspaceProvider>

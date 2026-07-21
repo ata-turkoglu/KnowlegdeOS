@@ -4,6 +4,7 @@ import type { ApiConfig } from "../config/env.js";
 import { isHttpError } from "../lib/http-errors.js";
 import {
   getStoredDocumentDetail,
+  checkUploadConflicts,
   listStoredDocuments,
   reindexStoredDocument,
   storeUploadedDocument
@@ -45,6 +46,21 @@ function handleError(reply: FastifyReply, error: unknown) {
 }
 
 export async function registerDocumentRoutes(app: FastifyInstance, config: ApiConfig) {
+  app.post<{ Body: { workspaceSlug?: string; files?: Array<{ filename?: string; hash?: string }> } }>("/api/documents/conflicts", async (request, reply) => {
+    const files = request.body?.files;
+    if (!files?.length || files.some((file) => !file.filename || !file.hash)) {
+      return reply.code(400).send({ error: "File names and hashes are required." });
+    }
+    try {
+      return await checkUploadConflicts(config, {
+        workspaceSlug: request.body?.workspaceSlug,
+        files: files.map((file) => ({ filename: file.filename!, hash: file.hash! }))
+      });
+    } catch (error) {
+      return handleError(reply, error);
+    }
+  });
+
   app.get<{ Params: { operationId: string } }>(
     "/api/reindex-operations/:operationId",
     async (request, reply) => {

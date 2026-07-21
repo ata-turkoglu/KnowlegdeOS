@@ -7,7 +7,6 @@ import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { registerDocumentRoutes } from "./routes/documents.js";
 import { registerEntityRoutes } from "./routes/entities.js";
 import { registerHealthRoutes } from "./routes/health.js";
-import { registerPromptRoutes } from "./routes/prompts.js";
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerWorkspaceRoutes } from "./routes/workspaces.js";
@@ -23,7 +22,6 @@ await app.register(cors, {
 await app.register(multipart);
 await registerHealthRoutes(app, config);
 await registerSettingsRoutes(app, config);
-await registerPromptRoutes(app);
 await registerDashboardRoutes(app, config);
 await registerWorkspaceRoutes(app, config);
 await registerDocumentRoutes(app, config);
