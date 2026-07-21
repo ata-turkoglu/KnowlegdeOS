@@ -1,10 +1,12 @@
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ApiConfig } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
 import { ensureWorkspaceStorage, getWorkspaceStoragePaths } from "./storage.js";
+import { writeFileAtomically } from "./storage.js";
 import type { IndexedDocumentMetadata } from "./documents.js";
 import { getEmbeddingProvider, selectedEmbeddingModel } from "./ai-providers.js";
+import { getWorkspaceIngestionSettings } from "./workspace-settings.js";
 
 export type SemanticIndexChunk = {
   id: string;
@@ -105,6 +107,7 @@ export async function searchSemanticDocuments(
   }
 ): Promise<SemanticSearchResult> {
   const workspaceSlug = slugify(input.workspaceSlug);
+  const settings = await getWorkspaceIngestionSettings(config, workspaceSlug);
   let index = await readSemanticIndex(config, workspaceSlug);
   const provider = getEmbeddingProvider(config);
   const queryEmbedding = await provider.embed(input.query);
@@ -123,7 +126,8 @@ export async function searchSemanticDocuments(
       snippet: chunk.content.slice(0, 500)
     }))
     .sort((left, right) => right.score - left.score)
-    .slice(0, input.limit ?? 5);
+    .filter((result) => result.score >= settings.similarityThreshold)
+    .slice(0, input.limit ?? settings.semanticTopK);
 
   return {
     queryType: "SEMANTIC_SEARCH",
@@ -159,7 +163,16 @@ async function readSemanticIndex(config: ApiConfig, workspaceSlug: string) {
 async function writeSemanticIndex(config: ApiConfig, index: SemanticIndex) {
   const paths = await ensureWorkspaceStorage(config.storageRoot, index.workspaceSlug);
   const indexPath = path.join(paths.metadata, "embeddings.json");
-  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  await writeFileAtomically(indexPath, `${JSON.stringify(index, null, 2)}\n`);
+}
+
+export async function invalidateSemanticIndex(config: ApiConfig, workspaceSlugInput: string) {
+  const paths = getWorkspaceStoragePaths(config.storageRoot, slugify(workspaceSlugInput));
+  try {
+    await unlink(path.join(paths.metadata, "embeddings.json"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 function cosineSimilarity(left: number[], right: number[]) {

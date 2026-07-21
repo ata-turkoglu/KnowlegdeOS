@@ -7,6 +7,7 @@ import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
 import { ensureWorkspaceStorage, getWorkspaceStoragePaths } from "./storage.js";
+import { writeFileAtomically } from "./storage.js";
 import type { IndexedDocumentMetadata } from "./documents.js";
 
 export type EntityAlias = {
@@ -374,7 +375,7 @@ function addDocumentLink(entity: CanonicalEntity, document: EntityDocumentLink) 
 async function writeEntityIndex(config: ApiConfig, index: EntityIndex) {
   const paths = await ensureWorkspaceStorage(config.storageRoot, index.workspaceSlug);
   const indexPath = path.join(paths.metadata, "entities.json");
-  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  await writeFileAtomically(indexPath, `${JSON.stringify(index, null, 2)}\n`);
 }
 
 function entityId(workspaceSlug: string, type: EntityType, groupKey: string) {

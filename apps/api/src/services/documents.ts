@@ -1,22 +1,26 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import type { SavedMultipartFile } from "@fastify/multipart";
 import {
   buildEntityExtractionPrompt,
   type LLMExtractionResult
 } from "@knowledgeos/ai";
-import { ingestMarkdown, type IngestionResult } from "@knowledgeos/ingestion";
+import { ingestMarkdown, parseMarkdownFrontmatter, type IngestionResult } from "@knowledgeos/ingestion";
 import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
 import {
   ensureWorkspaceStorage,
   getWorkspaceStoragePaths,
+  writeFileAtomically,
   writeWorkspaceMetadata
 } from "./storage.js";
 import { rebuildEntityIndex } from "./entities.js";
 import { getLlmProvider } from "./ai-providers.js";
+import { getWorkspaceIngestionSettings, matchesIngestionSettings, type WorkspaceIngestionSettings } from "./workspace-settings.js";
+import { invalidateSemanticIndex, rebuildSemanticIndex } from "./semantic-search.js";
 
 const markdownExtensions = new Set([".md", ".txt"]);
 const originalExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"]);
@@ -37,6 +41,7 @@ export type IndexedDocumentMetadata = Omit<UploadedDocument, "status"> & {
   status: "INDEXED";
   indexedAt: string;
   ingestion: IngestionResult;
+  ingestionSettings?: WorkspaceIngestionSettings;
   llmExtraction?: LLMExtractionResult;
   llmExtractionError?: string;
   summary?: string;
@@ -76,12 +81,36 @@ export type DocumentDetail = DocumentListItem & {
   }>;
 };
 
+export type UploadConflict = {
+  filename: string;
+  documentName: string;
+  status: "NEW" | "DUPLICATE" | "CONFLICT";
+};
+
 function safeFileName(filename: string) {
   const parsed = path.parse(filename);
   const base = slugify(parsed.name);
   const extension = parsed.ext.toLowerCase();
 
   return `${base}${extension}`;
+}
+
+export async function checkUploadConflicts(
+  config: ApiConfig,
+  input: { workspaceSlug?: string; files: Array<{ filename: string; hash: string }> }
+): Promise<UploadConflict[]> {
+  const workspaceSlug = slugify(input.workspaceSlug?.trim() || "inbox");
+  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
+  return Promise.all(input.files.map(async (file) => {
+    const documentName = path.parse(safeFileName(file.filename)).name;
+    try {
+      const metadata = JSON.parse(await readFile(path.join(paths.metadata, `${documentName}.json`), "utf8")) as UploadedDocument | IndexedDocumentMetadata;
+      return { filename: file.filename, documentName, status: metadata.hash === file.hash ? "DUPLICATE" : "CONFLICT" };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { filename: file.filename, documentName, status: "NEW" };
+      throw error;
+    }
+  }));
 }
 
 export async function listStoredDocuments(
@@ -234,38 +263,53 @@ export async function storeUploadedDocument(
   const documentName = path.parse(markdownFileName).name;
   const markdownPath = path.join(paths.markdown, markdownFileName);
 
-  await writeFile(markdownPath, markdownBuffer);
-
+  const markdownWasNew = !existsSync(markdownPath);
+  let markdownWritten = false;
+  let originalWasNew = false;
+  let originalWritten = false;
   let sourceOriginalPath: string | null = null;
 
-  if (input.originalFile) {
-    const originalBuffer = await readFile(input.originalFile.filepath);
-    sourceOriginalPath = path.join(paths.originals, safeFileName(input.originalFile.filename));
-    await writeFile(sourceOriginalPath, originalBuffer);
+  try {
+    await writeFileAtomically(markdownPath, markdownBuffer);
+    markdownWritten = true;
+
+    if (input.originalFile) {
+      const originalBuffer = await readFile(input.originalFile.filepath);
+      sourceOriginalPath = path.join(paths.originals, safeFileName(input.originalFile.filename));
+      originalWasNew = !existsSync(sourceOriginalPath);
+      await writeFileAtomically(sourceOriginalPath, originalBuffer);
+      originalWritten = true;
+    }
+
+    const frontmatterTitle = parseMarkdownFrontmatter(markdownBuffer.toString("utf8")).frontmatter.title;
+    const title = input.title?.trim()
+      || (typeof frontmatterTitle === "string" ? frontmatterTitle.trim() : "")
+      || path.parse(input.markdownFile.filename).name;
+    const metadataPath = path.join(paths.metadata, `${documentName}.json`);
+    const metadata: UploadedDocument = {
+      workspaceSlug,
+      documentName,
+      filename: input.markdownFile.filename,
+      title,
+      hash,
+      markdownPath,
+      sourceOriginalPath,
+      metadataPath,
+      status: "UPLOADED"
+    };
+
+    await writeFileAtomically(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+    await writeWorkspaceMetadata(paths, {
+      slug: workspaceSlug,
+      storagePath: paths.root,
+      updatedAt: new Date().toISOString()
+    });
+    return metadata;
+  } catch (error) {
+    if (markdownWritten && markdownWasNew) await unlink(markdownPath).catch(() => undefined);
+    if (originalWritten && originalWasNew && sourceOriginalPath) await unlink(sourceOriginalPath).catch(() => undefined);
+    throw error;
   }
-
-  const title = input.title?.trim() || path.parse(input.markdownFile.filename).name;
-  const metadataPath = path.join(paths.metadata, `${documentName}.json`);
-  const metadata: UploadedDocument = {
-    workspaceSlug,
-    documentName,
-    filename: input.markdownFile.filename,
-    title,
-    hash,
-    markdownPath,
-    sourceOriginalPath,
-    metadataPath,
-    status: "UPLOADED"
-  };
-
-  await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
-  await writeWorkspaceMetadata(paths, {
-    slug: workspaceSlug,
-    storagePath: paths.root,
-    updatedAt: new Date().toISOString()
-  });
-
-  return metadata;
 }
 
 export async function reindexStoredDocument(
@@ -282,22 +326,37 @@ export async function reindexStoredDocument(
   const documentName = slugify(input.documentName);
   const paths = getWorkspaceStoragePaths(config.storageRoot, workspaceSlug);
   const metadataPath = path.join(paths.metadata, `${documentName}.json`);
-  const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as UploadedDocument;
+  const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as UploadedDocument | IndexedDocumentMetadata;
+  const {
+    status: _previousStatus,
+    indexedAt: _previousIndexedAt,
+    ingestion: _previousIngestion,
+    ingestionSettings: _previousIngestionSettings,
+    llmExtraction: _previousLlmExtraction,
+    llmExtractionError: _previousLlmExtractionError,
+    summary: _previousSummary,
+    ...uploadedMetadata
+  } = metadata as IndexedDocumentMetadata;
   const markdown = await readFile(metadata.markdownPath, "utf8");
   input.onProgress?.("Preparing document");
-  const ingestion = ingestMarkdown(markdown);
+  const ingestionSettings = await getWorkspaceIngestionSettings(config, workspaceSlug);
+  const ingestion = ingestMarkdown(markdown, {
+    targetWords: ingestionSettings.chunkSize,
+    overlapWords: ingestionSettings.chunkOverlap
+  });
   const indexedMetadata: IndexedDocumentMetadata = {
-    ...metadata,
+    ...uploadedMetadata,
     status: "INDEXED",
     indexedAt: new Date().toISOString(),
     ingestion,
+    ingestionSettings,
     llmExtractionError: undefined
   };
 
   if (input.useLlm) {
     try {
       input.onProgress?.("Waiting for AI response");
-      const provider = getLlmProvider(config);
+      const provider = getLlmProvider(config, "extraction");
       const llmExtraction = await provider.generateJson<LLMExtractionResult>(
         buildEntityExtractionPrompt(ingestion.content),
         input.signal
@@ -313,9 +372,49 @@ export async function reindexStoredDocument(
   }
 
   input.onProgress?.("Saving index");
-  await writeFile(metadataPath, `${JSON.stringify(indexedMetadata, null, 2)}\n`, "utf8");
+  await writeFileAtomically(metadataPath, `${JSON.stringify(indexedMetadata, null, 2)}\n`);
+  await invalidateSemanticIndex(config, workspaceSlug);
   input.onProgress?.("Updating entity index");
   await rebuildEntityIndex(config, workspaceSlug);
 
   return indexedMetadata;
+}
+
+export async function getWorkspaceReindexStatus(config: ApiConfig, workspaceSlugInput: string) {
+  const workspaceSlug = slugify(workspaceSlugInput || "merter-arsivi");
+  const settings = await getWorkspaceIngestionSettings(config, workspaceSlug);
+  const documents = await listStoredDocuments(config, workspaceSlug);
+  const paths = getWorkspaceStoragePaths(config.storageRoot, workspaceSlug);
+  let staleDocumentCount = 0;
+
+  for (const document of documents) {
+    if (document.status !== "INDEXED") {
+      staleDocumentCount += 1;
+      continue;
+    }
+    const metadata = JSON.parse(await readFile(path.join(paths.metadata, `${document.documentName}.json`), "utf8")) as IndexedDocumentMetadata;
+    if (!matchesIngestionSettings(metadata.ingestionSettings, settings)) staleDocumentCount += 1;
+  }
+
+  return { documentCount: documents.length, staleDocumentCount, requiresReindex: staleDocumentCount > 0 };
+}
+
+export async function reindexWorkspaceDocuments(
+  config: ApiConfig,
+  workspaceSlugInput: string,
+  options: { signal?: AbortSignal; useLlm?: boolean; onProgress?: (progress: { completed: number; total: number; documentName?: string }) => void } = {}
+) {
+  const workspaceSlug = slugify(workspaceSlugInput || "merter-arsivi");
+  const documents = await listStoredDocuments(config, workspaceSlug);
+  let reindexedCount = 0;
+  for (const document of documents) {
+    if (options.signal?.aborted) throw new Error("Reindexing cancelled.");
+    options.onProgress?.({ completed: reindexedCount, total: documents.length, documentName: document.documentName });
+    await reindexStoredDocument(config, { workspaceSlug, documentName: document.documentName, useLlm: options.useLlm === true, signal: options.signal });
+    reindexedCount += 1;
+    options.onProgress?.({ completed: reindexedCount, total: documents.length, documentName: document.documentName });
+  }
+  if (options.signal?.aborted) throw new Error("Reindexing cancelled.");
+  if (reindexedCount > 0) await rebuildSemanticIndex(config, workspaceSlug);
+  return { workspaceSlug, reindexedCount };
 }

@@ -64,13 +64,13 @@ const extractionJsonSchema = {
 } as const;
 
 export class OpenAIProvider implements LLMProvider {
-  constructor(private readonly apiKey: string, private readonly model: string) {}
+  constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
   async generate(prompt: string, signal?: AbortSignal): Promise<string> {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({ model: this.model, input: prompt, temperature: 0 }), signal
+      body: JSON.stringify({ model: this.model, input: prompt, temperature: this.temperature }), signal
     });
     if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}`);
     const body = await response.json() as OpenAIResponseBody;
@@ -84,7 +84,7 @@ export class OpenAIProvider implements LLMProvider {
       body: JSON.stringify({
         model: this.model,
         input: prompt,
-        temperature: 0,
+        temperature: this.temperature,
         max_output_tokens: 4096,
         text: {
           format: {

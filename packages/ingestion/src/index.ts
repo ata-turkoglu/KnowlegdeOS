@@ -22,7 +22,7 @@ export const ingestionStages: IngestionStage[] = [
   "embedding"
 ];
 
-export { chunkMarkdown, type DocumentChunk } from "./chunk.js";
+export { chunkMarkdown, type ChunkOptions, type DocumentChunk } from "./chunk.js";
 export { deterministicExtract, type ExtractedEntity } from "./extract.js";
 export { parseMarkdownFrontmatter, type ParsedMarkdown } from "./frontmatter.js";
 export { normalizeForSearch, normalizeText } from "./normalize.js";
@@ -35,9 +35,9 @@ export type IngestionResult = {
   entities: import("./extract.js").ExtractedEntity[];
 };
 
-export function ingestMarkdown(markdown: string): IngestionResult {
+export function ingestMarkdown(markdown: string, chunkOptions?: import("./chunk.js").ChunkOptions): IngestionResult {
   const parsed = parseMarkdownFrontmatter(normalizeText(markdown));
-  const chunks = chunkMarkdown(parsed.content);
+  const chunks = chunkMarkdown(parsed.content, chunkOptions);
 
   return {
     frontmatter: parsed.frontmatter,

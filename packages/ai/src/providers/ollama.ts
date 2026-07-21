@@ -13,7 +13,8 @@ export class OllamaProvider implements LLMProvider {
   constructor(
     private readonly baseUrl: string,
     private readonly model: string,
-    private readonly timeoutMs = 60000
+    private readonly timeoutMs: number,
+    private readonly temperature: number
   ) {}
 
   async generate(prompt: string, signal?: AbortSignal): Promise<string> {
@@ -34,7 +35,7 @@ export class OllamaProvider implements LLMProvider {
         stream: false,
         format: "json",
         options: {
-          temperature: 0
+          temperature: this.temperature
         }
       })
     }).finally(() => {

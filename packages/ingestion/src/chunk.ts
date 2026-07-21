@@ -8,22 +8,31 @@ export type DocumentChunk = {
   tokenCount: number;
 };
 
-export function chunkMarkdown(content: string, targetWords = 420): DocumentChunk[] {
+export type ChunkOptions = {
+  targetWords?: number;
+  overlapWords?: number;
+};
+
+export function chunkMarkdown(content: string, options: ChunkOptions = {}): DocumentChunk[] {
+  const targetWords = Math.max(100, Math.min(2_000, Math.round(options.targetWords ?? 420)));
+  const overlapWords = Math.max(0, Math.min(targetWords - 1, Math.round(options.overlapWords ?? 60)));
+  const step = targetWords - overlapWords;
   const sections = splitSections(content);
   const chunks: DocumentChunk[] = [];
 
   for (const section of sections) {
     const words = section.content.split(/\s+/).filter(Boolean);
 
-    for (let start = 0; start < words.length; start += targetWords) {
+    for (let start = 0; start < words.length; start += step) {
       const contentSlice = words.slice(start, start + targetWords).join(" ");
       chunks.push({
         chunkIndex: chunks.length,
         heading: section.heading,
         content: contentSlice,
         normalizedContent: normalizeForSearch(contentSlice),
-        tokenCount: Math.ceil(words.length * 1.35)
+        tokenCount: Math.ceil(contentSlice.split(/\s+/).filter(Boolean).length * 1.35)
       });
+      if (start + targetWords >= words.length) break;
     }
   }
 

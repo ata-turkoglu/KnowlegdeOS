@@ -3,13 +3,13 @@ import type { EmbeddingProvider, LLMProvider } from "../index.js";
 const baseUrl = "https://generativelanguage.googleapis.com/v1beta/models";
 
 export class GeminiProvider implements LLMProvider {
-  constructor(private readonly apiKey: string, private readonly model: string) {}
+  constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
   async generate(prompt: string, signal?: AbortSignal): Promise<string> {
     const response = await fetch(`${baseUrl}/${this.model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0 } }), signal
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: this.temperature } }), signal
     });
     if (!response.ok) throw new Error(`Gemini response failed with ${response.status}`);
     const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };

@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 export type WorkspaceStoragePaths = {
@@ -64,9 +65,21 @@ export async function writeWorkspaceMetadata(
   metadata: Record<string, unknown>
 ) {
   const filePath = path.join(paths.metadata, "workspace.json");
-  await writeFile(filePath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+  await writeFileAtomically(filePath, `${JSON.stringify(metadata, null, 2)}\n`);
 
   return filePath;
+}
+
+export async function writeFileAtomically(filePath: string, content: string | Uint8Array) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryPath, content, { flag: "wx" });
+    await rename(temporaryPath, filePath);
+  } catch (error) {
+    try { await unlink(temporaryPath); } catch { /* Nothing to clean up. */ }
+    throw error;
+  }
 }
 
 export async function readWorkspaceMetadata(paths: WorkspaceStoragePaths) {

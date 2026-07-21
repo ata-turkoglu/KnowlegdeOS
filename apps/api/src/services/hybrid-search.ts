@@ -2,6 +2,7 @@ import type { QueryType } from "@knowledgeos/shared";
 import type { ApiConfig } from "../config/env.js";
 import { searchSemanticDocuments, type SemanticSearchResult } from "./semantic-search.js";
 import { searchEntityDocuments, type EntitySearchResult } from "./search.js";
+import { getWorkspaceIngestionSettings } from "./workspace-settings.js";
 
 export type HybridSearchResult = {
   queryType: "HYBRID_SEARCH";
@@ -32,10 +33,11 @@ export async function searchHybridDocuments(
     limit?: number;
   }
 ): Promise<HybridSearchResult> {
+  const settings = await getWorkspaceIngestionSettings(config, input.workspaceSlug);
   const entity = await searchEntityDocuments(config, input);
   const semantic = await searchSemanticDocuments(config, {
     ...input,
-    limit: input.limit ?? 5
+    limit: input.limit ?? settings.semanticTopK
   });
   const byDocument = new Map<string, HybridSearchResult["documents"][number]>();
 
