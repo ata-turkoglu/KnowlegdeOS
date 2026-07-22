@@ -1,4 +1,5 @@
 import { ChatPanel } from "./chat-panel";
+import { ConversionPanel } from "./conversion-panel";
 import { DashboardMetrics } from "./dashboard-metrics";
 import { DocumentsPanel } from "./documents-panel";
 import { EntitiesPanel } from "./entities-panel";
@@ -7,6 +8,7 @@ import { UploadPanel } from "./upload-panel";
 
 export const sections = [
   { id: "dashboard", label: "Dashboard", icon: "pi-home" },
+  { id: "convert", label: "Convert", icon: "pi-file-edit" },
   { id: "upload", label: "Upload", icon: "pi-upload" },
   { id: "documents", label: "Documents", icon: "pi-file" },
   { id: "entities", label: "Entities", icon: "pi-sitemap" },
@@ -29,6 +31,7 @@ export function WorkspaceApp({ activeSection }: WorkspaceAppProps) {
       {activeSection === "search" ? <SearchPanel /> : null}
       {activeSection === "chat" ? <ChatPanel /> : null}
       {activeSection === "upload" ? <UploadPanel /> : null}
+      {activeSection === "convert" ? <ConversionPanel /> : null}
     </section>
   );
 }

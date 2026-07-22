@@ -6,6 +6,7 @@ import { AIcon } from "../components/ui";
 import { WorkspaceApp, type WorkspaceSectionId, sections } from "./workspace-app";
 import { WorkspaceProvider } from "./workspace-context";
 import { SettingsPanel } from "./settings-panel";
+import { WorkspaceSettingsPanel } from "./workspace-settings-panel";
 import { TransferPanel } from "./transfer-panel";
 import { WorkspaceSwitcher } from "./workspace-switcher";
 import { LanguageProvider, useLanguage } from "./language-context";
@@ -101,6 +102,7 @@ function WorkspaceShellContent({ activeSection }: Required<WorkspaceShellProps>)
             {activeSection === "settings" ? (
               <div className="settings-layout">
                 <SettingsPanel />
+                <WorkspaceSettingsPanel />
                 <TransferPanel />
               </div>
             ) : <WorkspaceApp activeSection={activeSection} />}
@@ -115,6 +117,7 @@ function sectionLabel(section: WorkspaceSectionId, language: "tr" | "en") {
   const labels: Record<WorkspaceSectionId, Record<"tr" | "en", string>> = {
     dashboard: { tr: "Panel", en: "Dashboard" },
     upload: { tr: "Yükle", en: "Upload" },
+    convert: { tr: "Dosya Dönüştür", en: "File Conversion" },
     documents: { tr: "Belgeler", en: "Documents" },
     entities: { tr: "Varlıklar", en: "Entities" },
     search: { tr: "Arama", en: "Search" },

@@ -5,6 +5,7 @@ import { Tooltip } from "primereact/tooltip";
 import { AButton, ADialog, AIcon } from "../components/ui";
 import { useWorkspace } from "./workspace-context";
 import { useLanguage } from "./language-context";
+import { OperationStatusButton } from "./operation-status-dialog";
 
 const apiBaseUrl = "http://127.0.0.1:4000";
 
@@ -19,6 +20,11 @@ type DocumentItem = {
   entityCount: number;
   hasLlmExtraction: boolean;
   llmExtractionError: string | null;
+};
+
+type EmbeddingCoverageItem = {
+  documentName: string;
+  status: "MISSING" | "READY";
 };
 
 type DocumentDetail = DocumentItem & {
@@ -44,6 +50,8 @@ type ReindexOperation = {
   stage: string;
   status: "running" | "completed" | "cancelled" | "failed";
 };
+
+type DocumentFilter = "all" | "indexed" | "chunks" | "entities" | "llm";
 
 function formatIndexedAt(value: string | null, language: "tr" | "en") {
   if (!value) {
@@ -88,6 +96,12 @@ function formatEntityConfidence(value: number) {
 }
 
 function formatLlmExtractionError(error: string, isEnglish: boolean) {
+  if (error.toLowerCase() === "fetch failed") {
+    return isEnglish
+      ? "AI extraction could not reach the configured model provider. The document was indexed, but its AI summary and entities were not created. Check that the provider and model are available, then run LLM indexing again."
+      : "Yapay zekâ çıkarımı, yapılandırılmış model sağlayıcısına ulaşamadı. Belge indekslendi; ancak yapay zekâ özeti ve varlıkları oluşturulamadı. Sağlayıcı ile modelin erişilebilir olduğunu kontrol edip LLM indekslemeyi yeniden çalıştırın.";
+  }
+
   if (error === "This operation was aborted") {
     return isEnglish
       ? "AI extraction timed out. The document was indexed, but its AI summary and entities were not created."
@@ -100,7 +114,20 @@ function formatLlmExtractionError(error: string, isEnglish: boolean) {
       : "Yapay zekâ çıkarımı iptal edildi. Belge, yapay zekâ özeti ve yapay zekâ varlıkları olmadan indekslendi.";
   }
 
-  return error;
+  if (error.startsWith("Expected ") || error.includes("JSON")) {
+    return isEnglish
+      ? "AI extraction returned incomplete structured data. Run LLM indexing again; if it repeats, use a smaller local model."
+      : "Yapay zekâ çıkarımı eksik yapılandırılmış veri döndürdü. LLM indekslemeyi yeniden çalıştırın; tekrar ederse daha küçük bir yerel model kullanın.";
+  }
+
+  return isEnglish
+    ? `AI extraction failed: ${error}`
+    : `Yapay zekâ çıkarımı başarısız oldu: ${error}`;
+}
+
+function formatDocumentStatus(status: DocumentItem["status"], isEnglish: boolean) {
+  if (status === "INDEXED") return isEnglish ? "Indexed" : "İndekslendi";
+  return isEnglish ? "Uploaded" : "Yüklendi";
 }
 
 function formatReindexStage(stage: string, isEnglish: boolean) {
@@ -138,6 +165,8 @@ export function DocumentsPanel() {
   const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [embeddingStatuses, setEmbeddingStatuses] = useState<Record<string, EmbeddingCoverageItem["status"]>>({});
+  const [documentFilter, setDocumentFilter] = useState<DocumentFilter>("all");
   const [selectedDocument, setSelectedDocument] = useState<DocumentDetail | null>(null);
   const [message, setMessage] = useState(isEnglish ? "Loading..." : "Yükleniyor...");
   const [isLoading, setIsLoading] = useState(false);
@@ -147,17 +176,24 @@ export function DocumentsPanel() {
   const [reindexStage, setReindexStage] = useState("");
   const [showMarkdownDialog, setShowMarkdownDialog] = useState(false);
   const reindexAbortController = useRef<AbortController | null>(null);
+  const filteredDocuments = documents.filter((document) => {
+    if (documentFilter === "indexed") return document.status === "INDEXED";
+    if (documentFilter === "chunks") return document.chunkCount > 0;
+    if (documentFilter === "entities") return document.entityCount > 0;
+    if (documentFilter === "llm") return document.hasLlmExtraction;
+    return true;
+  });
 
   async function loadDocuments(nextWorkspaceSlug = workspaceSlug) {
     setIsLoading(true);
     setMessage("");
 
-    const response = await fetch(
-      `${apiBaseUrl}/api/documents?workspaceSlug=${encodeURIComponent(
-        nextWorkspaceSlug
-      )}`
-    );
+    const [response, embeddingResponse] = await Promise.all([
+      fetch(`${apiBaseUrl}/api/documents?workspaceSlug=${encodeURIComponent(nextWorkspaceSlug)}`),
+      fetch(`${apiBaseUrl}/api/documents/${encodeURIComponent(nextWorkspaceSlug)}/embedding-coverage`)
+    ]);
     const body = await response.json();
+    const embeddingCoverage = embeddingResponse.ok ? await embeddingResponse.json() as EmbeddingCoverageItem[] : [];
 
     setIsLoading(false);
 
@@ -167,6 +203,7 @@ export function DocumentsPanel() {
     }
 
     setDocuments(body);
+    setEmbeddingStatuses(Object.fromEntries(embeddingCoverage.map((item) => [item.documentName, item.status])));
     setMessage(isEnglish ? `${body.length} document(s) listed.` : `${body.length} belge listelendi.`);
 
     if (body.length > 0) {
@@ -294,10 +331,38 @@ export function DocumentsPanel() {
       <div className="documents-panel-header">
         <div>
           <p className="eyebrow">Belge yönetimi</p>
-          <h3>{isEnglish ? "Documents" : "Belgeler"}</h3>
+          <h3>
+            {isEnglish ? "Documents" : "Belgeler"}
+            <span className="document-count" aria-label={isEnglish ? `${filteredDocuments.length} documents shown` : `${filteredDocuments.length} belge gösteriliyor`}>
+              {documentFilter === "all" ? documents.length : `${filteredDocuments.length}/${documents.length}`}
+            </span>
+            <span className="document-filters" aria-label={isEnglish ? "Document filters" : "Belge filtreleri"}>
+              {([
+                ["all", "pi-list", isEnglish ? "All documents" : "Tüm belgeler"],
+                ["indexed", "pi-check-circle", isEnglish ? "Indexed documents" : "İndekslenmiş belgeler"],
+                ["chunks", "pi-align-left", isEnglish ? "Documents with sections" : "Bölümü olan belgeler"],
+                ["entities", "pi-tags", isEnglish ? "Documents with entities" : "Varlığı olan belgeler"],
+                ["llm", "pi-sparkles", isEnglish ? "AI extracted documents" : "Yapay zekâ çıkarımlı belgeler"]
+              ] as const).map(([filter, icon, label]) => (
+                <AButton
+                  key={filter}
+                  className={documentFilter === filter ? "document-filter is-active" : "document-filter p-button-outlined"}
+                  type="button"
+                  tone="secondary"
+                  onClick={() => setDocumentFilter(filter)}
+                  aria-label={label}
+                  aria-pressed={documentFilter === filter}
+                  title={label}
+                >
+                  <i className={`pi ${icon}`} aria-hidden="true" />
+                </AButton>
+              ))}
+            </span>
+          </h3>
         </div>
 
         <div className="documents-toolbar">
+          <OperationStatusButton workspaceSlug={workspaceSlug} />
           <AButton type="button" onClick={() => loadDocuments()} disabled={isLoading}>
             {isLoading ? (isEnglish ? "Loading..." : "Yükleniyor...") : isEnglish ? "Refresh" : "Yenile"}
           </AButton>
@@ -306,7 +371,7 @@ export function DocumentsPanel() {
 
       <div className="documents-layout">
         <div className="document-list">
-          {documents.map((document) => (
+          {filteredDocuments.map((document) => (
             <article
               key={document.documentName}
               className={selectedDocument?.documentName === document.documentName ? "document-row is-selected" : "document-row"}
@@ -327,10 +392,20 @@ export function DocumentsPanel() {
 
               <div className="document-row-footer">
                 <div className="document-stats">
-                  <span><AIcon icon={<i className="pi pi-check-circle" />} tooltip={document.status} /></span>
+                  <span><AIcon icon={<i className="pi pi-check-circle" />} tooltip={formatDocumentStatus(document.status, isEnglish)} /></span>
                   <span><AIcon icon={<i className="pi pi-align-left" />} tooltip={`${document.chunkCount} ${isEnglish ? "document sections" : "belge bölümü"}`} /></span>
                   <span><AIcon icon={<i className="pi pi-tags" />} tooltip={`${document.entityCount} ${isEnglish ? "entities" : "varlık"}`} /></span>
                   <span><AIcon icon={<i className={`pi ${document.hasLlmExtraction ? "pi-sparkles" : "pi-equals"}`} />} tooltip={document.hasLlmExtraction ? "LLM" : isEnglish ? "Rule-based" : "Kural tabanlı"} /></span>
+                  {document.status === "INDEXED" ? (
+                    <span className={`document-embedding-status is-${(embeddingStatuses[document.documentName] ?? "MISSING").toLowerCase()}`}>
+                      <AIcon
+                        icon={<i className={`pi ${(embeddingStatuses[document.documentName] ?? "MISSING") === "READY" ? "pi-database" : "pi-clock"}`} />}
+                        tooltip={(embeddingStatuses[document.documentName] ?? "MISSING") === "READY"
+                          ? (isEnglish ? "Embedding created" : "Embedding oluşturuldu")
+                          : (isEnglish ? "Waiting for embedding" : "Embedding bekliyor")}
+                      />
+                    </span>
+                  ) : null}
                   {document.llmExtractionError ? (
                     <span>
                       <AIcon
@@ -422,6 +497,7 @@ export function DocumentsPanel() {
           ))}
 
           {documents.length === 0 ? <p className="empty-state">{isEnglish ? "There are no documents in this workspace." : "Bu çalışma alanında belge yok."}</p> : null}
+          {documents.length > 0 && filteredDocuments.length === 0 ? <p className="empty-state">{isEnglish ? "No documents match this filter." : "Bu filtreyle eşleşen belge yok."}</p> : null}
         </div>
 
         {selectedDocument ? (
@@ -463,7 +539,7 @@ export function DocumentsPanel() {
                       <strong>
                         #{chunk.chunkIndex} {chunk.heading}
                       </strong>
-                      <span>{chunk.tokenCount} token</span>
+                      <span>{chunk.tokenCount} {isEnglish ? "tokens" : "belirteç"}</span>
                     </div>
                     <p>{chunk.content}</p>
                   </article>
