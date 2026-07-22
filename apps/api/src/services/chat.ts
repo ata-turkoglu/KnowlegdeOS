@@ -1,9 +1,9 @@
 import { classifyQuery } from "@knowledgeos/search";
 import type { QueryType } from "@knowledgeos/shared";
 import type { ApiConfig } from "../config/env.js";
-import { answerFromHybrid, searchHybridDocuments } from "./hybrid-search.js";
-import { searchSemanticDocuments } from "./semantic-search.js";
-import { searchEntityDocuments, type EntitySearchResult } from "./search.js";
+import { getLlmProvider } from "./ai-providers.js";
+import { getSemanticContext, searchSemanticDocuments, type SemanticContextChunk } from "./semantic-search.js";
+import type { EntitySearchResult } from "./search.js";
 
 export type ChatResponse = {
   queryType: QueryType;
@@ -22,86 +22,42 @@ export type ChatResponse = {
 
 export async function answerChat(
   config: ApiConfig,
-  input: {
-    workspaceSlug: string;
-    message: string;
-  }
+  input: { workspaceSlug: string; message: string }
 ): Promise<ChatResponse> {
   const queryType = classifyQuery(input.message);
+  const result = await searchSemanticDocuments(config, {
+    workspaceSlug: input.workspaceSlug,
+    query: input.message
+  });
+  const sources = result.sources.map((source) => ({ ...source, sourceType: "SEMANTIC" as const }));
 
-  if (queryType === "ENTITY_SEARCH") {
-    const result = await searchEntityDocuments(config, {
-      workspaceSlug: input.workspaceSlug,
-      query: input.message
-    });
-
+  if (result.results.length === 0) {
     return {
       queryType,
-      answer: entitySearchAnswer(result),
-      matchedEntity: result.matchedEntity,
-      matchedAliases: result.matchedAliases,
-      sources: result.sources
-    };
-  }
-
-  if (queryType === "HYBRID_SEARCH") {
-    const result = await searchHybridDocuments(config, {
-      workspaceSlug: input.workspaceSlug,
-      query: input.message
-    });
-
-    return {
-      queryType,
-      answer: answerFromHybrid(result),
-      matchedEntity: result.entity.matchedEntity,
-      matchedAliases: result.entity.matchedAliases,
-      sources: result.sources
-    };
-  }
-
-  if (queryType === "SEMANTIC_SEARCH") {
-    const result = await searchSemanticDocuments(config, {
-      workspaceSlug: input.workspaceSlug,
-      query: input.message
-    });
-
-    return {
-      queryType,
-      answer:
-        result.results.length > 0
-          ? `Semantic arama en ilgili belge olarak ${result.results[0].documentName} sonucunu buldu.`
-          : "Semantic arama için ilgili belge bulunamadı.",
+      answer: "Bu soruyu yanıtlamak için çalışma alanında yeterince ilgili kaynak bulamadım.",
       matchedEntity: null,
       matchedAliases: [],
-      sources: result.sources.map((source) => ({
-        ...source,
-        sourceType: "SEMANTIC" as const
-      }))
+      sources
     };
   }
+
+  const context = await getSemanticContext(config, input.workspaceSlug, result.results);
+  const answer = await getLlmProvider(config, "answer").generate(buildRagPrompt(input.message, context));
 
   return {
     queryType,
-    answer:
-      "Bu soru tipi için chat cevabı henüz MVP kapsamında uygulanmadı. Şu an kesin entity arama soruları destekleniyor.",
+    answer: answer.trim() || "Model kaynaklara dayalı bir yanıt üretemedi.",
     matchedEntity: null,
     matchedAliases: [],
-    sources: []
+    sources
   };
 }
 
-function entitySearchAnswer(result: EntitySearchResult) {
-  if (!result.matchedEntity) {
-    return "Bu entity için eşleşen belge bulunamadı.";
-  }
+function buildRagPrompt(question: string, chunks: SemanticContextChunk[]) {
+  const context = chunks.map((chunk, index) => {
+    const source = `[${index + 1}] Belge: ${chunk.documentName}; Başlık: ${chunk.title}; Bölüm: ${chunk.heading ?? "-"}; Parça: ${chunk.chunkIndex}`;
+    return `${source}\n${chunk.content}`;
+  }).join("\n\n---\n\n");
 
-  if (result.retrievedDocuments.length === 0) {
-    return `${result.matchedEntity.canonicalValue} için kaynak belge bulunamadı.`;
-  }
-
-  const documents = result.retrievedDocuments
-    .map((document) => document.documentName)
-    .join(", ");
-
-  return `${result.matchedEntity.canonicalValue} şu belgelerde geçiyor: ${documents}.`;
+  return `Sen, kullanıcının çalışma alanındaki belgelerle çalışan bir araştırma asistanısın. Soruyu yalnızca aşağıdaki kaynak parçalarına dayanarak yanıtla. Kaynaklarda olmayan bilgiyi uydurma. Kaynaklar yetersizse bunu açıkça söyle. Yanıtı kullanıcının sorusunun dilinde, açık ve doğrudan yaz. Her doğrulanabilir iddiadan sonra ilgili kaynak numarasını [1] biçiminde belirt. Kaynak numarası olmayan iddia yazma.\n\nKullanıcının sorusu:\n${question}\n\nKaynak parçaları:\n${context}`;
 }

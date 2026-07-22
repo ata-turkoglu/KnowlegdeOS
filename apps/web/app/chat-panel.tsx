@@ -94,11 +94,16 @@ export function ChatPanel() {
 
   useEffect(() => {
     let isCurrent = true;
-    fetch(`${apiBaseUrl}/api/settings/models`)
+    const loadActiveModel = () => fetch(`${apiBaseUrl}/api/settings/models`)
       .then(async (response) => response.ok ? response.json() as Promise<{ llmProvider: string; llmModel: string }> : null)
       .then((settings) => { if (isCurrent && settings) setActiveModel(`${settings.llmProvider} / ${settings.llmModel}`); })
       .catch(() => undefined);
-    return () => { isCurrent = false; };
+    void loadActiveModel();
+    window.addEventListener("knowledgeos:model-settings-changed", loadActiveModel);
+    return () => {
+      isCurrent = false;
+      window.removeEventListener("knowledgeos:model-settings-changed", loadActiveModel);
+    };
   }, []);
 
   function startNewChat() {

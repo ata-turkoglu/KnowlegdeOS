@@ -72,7 +72,7 @@ export class OpenAIProvider implements LLMProvider {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify({ model: this.model, input: prompt, temperature: this.temperature }), signal
     });
-    if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}`);
+    if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}: ${await response.text()}`);
     const body = await response.json() as OpenAIResponseBody;
     return getOutputText(body);
   }
@@ -98,7 +98,7 @@ export class OpenAIProvider implements LLMProvider {
       signal
     });
 
-    if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}`);
+    if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}: ${await response.text()}`);
 
     const body = await response.json() as OpenAIResponseBody;
     const outputText = getOutputText(body);

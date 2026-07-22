@@ -139,6 +139,7 @@ export function SettingsPanel() {
       setMessage(language === "tr" ? "Model ayarları kaydedilemedi." : "Model settings could not be saved.");
       return;
     }
+    window.dispatchEvent(new Event("knowledgeos:model-settings-changed"));
     setMessage(language === "tr" ? "Model ayarları kaydedildi." : "Model settings saved.");
   }
 

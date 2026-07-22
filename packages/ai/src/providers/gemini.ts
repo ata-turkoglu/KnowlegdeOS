@@ -6,18 +6,22 @@ export class GeminiProvider implements LLMProvider {
   constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
   async generate(prompt: string, signal?: AbortSignal): Promise<string> {
+    return this.request(prompt, signal);
+  }
+
+  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+    return JSON.parse(await this.request(prompt, signal, "application/json")) as T;
+  }
+
+  private async request(prompt: string, signal?: AbortSignal, responseMimeType?: "application/json"): Promise<string> {
     const response = await fetch(`${baseUrl}/${this.model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: this.temperature } }), signal
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { ...(responseMimeType ? { responseMimeType } : {}), temperature: this.temperature } }), signal
     });
     if (!response.ok) throw new Error(`Gemini response failed with ${response.status}`);
     const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
     return body.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
-  }
-
-  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    return JSON.parse(await this.generate(prompt, signal)) as T;
   }
 }
 

@@ -31,5 +31,5 @@ JSON şeması:
 }
 
 Belge:
-"""${content.slice(0, 12000)}"""`;
+"""${content.slice(0, 8000)}"""`;
 }

@@ -47,6 +47,84 @@ export type SemanticSearchResult = {
   }>;
 };
 
+export type SemanticContextChunk = {
+  documentName: string;
+  title: string;
+  chunkIndex: number;
+  heading: string | null;
+  content: string;
+};
+
+export type EmbeddingCoverageItem = {
+  documentName: string;
+  title: string;
+  chunkCount: number;
+  embeddedChunkCount: number;
+  status: "MISSING" | "READY";
+};
+
+async function readStoredSemanticIndex(config: ApiConfig, workspaceSlug: string): Promise<SemanticIndex | null> {
+  const paths = getWorkspaceStoragePaths(config.storageRoot, workspaceSlug);
+  try {
+    const index = JSON.parse(await readFile(path.join(paths.metadata, "embeddings.json"), "utf8")) as SemanticIndex;
+    return index.embeddingModel === selectedEmbeddingModel(config) ? index : null;
+  } catch { return null; }
+}
+
+export async function getEmbeddingCoverage(config: ApiConfig, workspaceSlugInput: string): Promise<EmbeddingCoverageItem[]> {
+  const workspaceSlug = slugify(workspaceSlugInput);
+  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
+  const index = await readStoredSemanticIndex(config, workspaceSlug);
+  const embeddedByDocument = new Map<string, number>();
+  for (const chunk of index?.chunks ?? []) embeddedByDocument.set(chunk.documentName, (embeddedByDocument.get(chunk.documentName) ?? 0) + 1);
+  const files = await readdir(paths.metadata);
+  const coverage: EmbeddingCoverageItem[] = [];
+  for (const fileName of files) {
+    if (!fileName.endsWith(".json") || ["workspace.json", "entities.json", "embeddings.json", "operations.json"].includes(fileName)) continue;
+    const metadata = JSON.parse(await readFile(path.join(paths.metadata, fileName), "utf8")) as Partial<IndexedDocumentMetadata>;
+    if (metadata.status !== "INDEXED" || !metadata.ingestion) continue;
+    const documentName = path.parse(fileName).name;
+    const chunkCount = metadata.ingestion.chunks.length;
+    const embeddedChunkCount = embeddedByDocument.get(documentName) ?? 0;
+    coverage.push({ documentName, title: metadata.title ?? documentName, chunkCount, embeddedChunkCount, status: embeddedChunkCount === chunkCount && chunkCount > 0 ? "READY" : "MISSING" });
+  }
+  return coverage.sort((left, right) => left.documentName.localeCompare(right.documentName, "tr"));
+}
+
+export async function embedSelectedDocuments(
+  config: ApiConfig,
+  workspaceSlugInput: string,
+  documentNames: string[],
+  onProgress?: (progress: { completed: number; total: number; documentName: string }) => void,
+  signal?: AbortSignal
+) {
+  const workspaceSlug = slugify(workspaceSlugInput);
+  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
+  const provider = getEmbeddingProvider(config);
+  const existing = await readStoredSemanticIndex(config, workspaceSlug);
+  const selected = new Set(documentNames.map(slugify));
+  const chunks = (existing?.chunks ?? []).filter((chunk) => !selected.has(chunk.documentName));
+  const files = await readdir(paths.metadata);
+  const selectedFiles = files.filter((fileName) => selected.has(path.parse(fileName).name));
+  let completed = 0;
+  for (const fileName of selectedFiles) {
+    if (signal?.aborted) throw new Error("Embedding cancelled.");
+    const metadata = JSON.parse(await readFile(path.join(paths.metadata, fileName), "utf8")) as Partial<IndexedDocumentMetadata>;
+    const documentName = path.parse(fileName).name;
+    onProgress?.({ completed, total: selectedFiles.length, documentName });
+    if (metadata.status === "INDEXED" && metadata.ingestion) {
+      for (const chunk of metadata.ingestion.chunks) {
+        if (signal?.aborted) throw new Error("Embedding cancelled.");
+        chunks.push({ id: `${documentName}:${chunk.chunkIndex}`, workspaceSlug, documentName, title: metadata.title ?? documentName, chunkIndex: chunk.chunkIndex, heading: chunk.heading, content: chunk.content, embedding: await provider.embed(chunk.content) });
+      }
+    }
+    completed += 1;
+    onProgress?.({ completed, total: selectedFiles.length, documentName });
+  }
+  await writeSemanticIndex(config, { version: 1, workspaceSlug, embeddingModel: selectedEmbeddingModel(config), updatedAt: new Date().toISOString(), chunks });
+  return { workspaceSlug, embeddedDocumentCount: completed };
+}
+
 export async function rebuildSemanticIndex(
   config: ApiConfig,
   workspaceSlugInput: string
@@ -141,6 +219,26 @@ export async function searchSemanticDocuments(
       score: result.score
     }))
   };
+}
+
+export async function getSemanticContext(
+  config: ApiConfig,
+  workspaceSlugInput: string,
+  results: SemanticSearchResult["results"]
+): Promise<SemanticContextChunk[]> {
+  const index = await readSemanticIndex(config, slugify(workspaceSlugInput));
+  const chunksById = new Map(index.chunks.map((chunk) => [chunk.id, chunk]));
+
+  return results.flatMap((result) => {
+    const chunk = chunksById.get(`${result.documentName}:${result.chunkIndex}`);
+    return chunk ? [{
+      documentName: chunk.documentName,
+      title: chunk.title,
+      chunkIndex: chunk.chunkIndex,
+      heading: chunk.heading,
+      content: chunk.content
+    }] : [];
+  });
 }
 
 async function readSemanticIndex(config: ApiConfig, workspaceSlug: string) {

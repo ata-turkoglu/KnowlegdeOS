@@ -18,6 +18,15 @@ export class OllamaProvider implements LLMProvider {
   ) {}
 
   async generate(prompt: string, signal?: AbortSignal): Promise<string> {
+    return this.request(prompt, signal);
+  }
+
+  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+    const text = await this.request(prompt, signal, "json");
+    return JSON.parse(extractJson(text)) as T;
+  }
+
+  private async request(prompt: string, signal?: AbortSignal, format?: "json"): Promise<string> {
     const controller = new AbortController();
     const timeout = this.timeoutMs > 0 ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
     const abort = () => controller.abort();
@@ -33,7 +42,10 @@ export class OllamaProvider implements LLMProvider {
         model: this.model,
         prompt,
         stream: false,
-        format: "json",
+        ...(format ? { format } : {}),
+        // Qwen 3 can spend a long time producing an internal reasoning trace.
+        // Extraction needs structured facts, not a chain of thought.
+        think: false,
         options: {
           temperature: this.temperature
         }
@@ -51,11 +63,6 @@ export class OllamaProvider implements LLMProvider {
 
     const body = (await response.json()) as OllamaGenerateResponse;
     return body.response ?? "";
-  }
-
-  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    const text = await this.generate(prompt, signal);
-    return JSON.parse(extractJson(text)) as T;
   }
 }
 
