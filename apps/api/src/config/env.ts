@@ -34,6 +34,7 @@ export type ApiConfig = {
   geminiLlmModel: string;
   geminiEmbeddingModel: string;
   storageRoot: string;
+  conversionRoot: string;
   apiHost: string;
   apiPort: number;
   environmentPath: string;
@@ -65,6 +66,7 @@ export function loadConfig(): ApiConfig {
     geminiLlmModel: process.env.GEMINI_LLM_MODEL ?? "gemini-2.5-flash",
     geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2",
     storageRoot: process.env.STORAGE_ROOT ?? "./storage",
+    conversionRoot: process.env.CONVERSION_ROOT ?? "./converted-markdown",
     apiHost: process.env.API_HOST ?? "127.0.0.1",
     apiPort: Number(process.env.API_PORT ?? 4000),
     environmentPath: getEnvironmentPath()

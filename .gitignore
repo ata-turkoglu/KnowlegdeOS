@@ -6,5 +6,6 @@ build/
 .env.local
 storage/
 sourceFiles/
+converted-markdown/
 *.log
 *.tsbuildinfo

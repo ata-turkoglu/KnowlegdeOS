@@ -75,7 +75,22 @@ export async function writeFileAtomically(filePath: string, content: string | Ui
   const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${randomUUID()}.tmp`);
   try {
     await writeFile(temporaryPath, content, { flag: "wx" });
-    await rename(temporaryPath, filePath);
+    // Windows Defender/indexers can briefly lock a just-written metadata file.
+    // Retrying the final atomic rename prevents a transient EPERM from failing
+    // an otherwise successful upload or indexing operation.
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await rename(temporaryPath, filePath);
+        return;
+      } catch (error) {
+        lastError = error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code !== "EPERM" && code !== "EBUSY") || attempt === 4) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, 80 * (attempt + 1)));
+      }
+    }
+    throw lastError;
   } catch (error) {
     try { await unlink(temporaryPath); } catch { /* Nothing to clean up. */ }
     throw error;

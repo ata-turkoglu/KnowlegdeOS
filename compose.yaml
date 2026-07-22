@@ -90,12 +90,14 @@ services:
       GEMINI_LLM_MODEL: ${GEMINI_LLM_MODEL:-gemini-2.5-flash}
       GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-2}
       STORAGE_ROOT: /app/storage
+      CONVERSION_ROOT: /app/converted-markdown
       API_HOST: 0.0.0.0
       API_PORT: 4000
     ports:
       - "4000:4000"
     volumes:
       - storage-data:/app/storage
+      - ./converted-markdown:/app/converted-markdown
       - ./.env:/app/.env
     depends_on:
       migrate:
