@@ -6,8 +6,10 @@ import {
   createWorkspaceExportManifest,
   getWorkspaceById,
   importWorkspaceSkeleton,
-  listWorkspaces
+  listWorkspaces,
+  updateWorkspace
 } from "../services/workspaces.js";
+import { clearWorkspaceDocuments, clearWorkspaceIndexes } from "../services/documents.js";
 import {
   createWorkspaceBackup,
   createWorkspaceExportBundle,
@@ -59,6 +61,30 @@ export async function registerWorkspaceRoutes(
   app.get<{ Params: { id: string } }>("/api/workspaces/:id", async (request, reply) => {
     try {
       return await getWorkspaceById(config, request.params.id);
+    } catch (error) {
+      return handleError(reply, error);
+    }
+  });
+
+  app.put<{ Params: { workspaceSlug: string } }>("/api/workspaces/:workspaceSlug", async (request, reply) => {
+    try {
+      return await updateWorkspace(config, request.params.workspaceSlug, parseWorkspaceBody(request.body));
+    } catch (error) {
+      return handleError(reply, error);
+    }
+  });
+
+  app.post<{ Params: { workspaceSlug: string } }>("/api/workspaces/:workspaceSlug/clear-indexes", async (request, reply) => {
+    try {
+      return await clearWorkspaceIndexes(config, request.params.workspaceSlug);
+    } catch (error) {
+      return handleError(reply, error);
+    }
+  });
+
+  app.post<{ Params: { workspaceSlug: string } }>("/api/workspaces/:workspaceSlug/clear-documents", async (request, reply) => {
+    try {
+      return await clearWorkspaceDocuments(config, request.params.workspaceSlug);
     } catch (error) {
       return handleError(reply, error);
     }

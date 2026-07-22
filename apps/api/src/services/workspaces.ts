@@ -23,6 +23,11 @@ export type CreateWorkspaceInput = {
   description?: string;
 };
 
+export type UpdateWorkspaceInput = {
+  name: string;
+  description?: string;
+};
+
 export type WorkspaceExportManifest = {
   version: 1;
   exportedAt: string;
@@ -222,6 +227,60 @@ export async function createWorkspace(
       description: workspace.description,
       storagePath: workspace.storagePath,
       createdAt: workspace.createdAt.toISOString()
+    });
+
+    return workspace;
+  });
+}
+
+export async function updateWorkspace(
+  config: ApiConfig,
+  workspaceSlugInput: string,
+  input: UpdateWorkspaceInput
+) {
+  const workspaceSlug = slugify(workspaceSlugInput);
+  const name = input.name.trim();
+
+  if (!workspaceSlug || !name) {
+    throw new HttpError(400, "Workspace name is required.");
+  }
+
+  return withDatabase(config, async ({ db }) => {
+    const [existingWorkspace] = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.slug, workspaceSlug))
+      .limit(1);
+
+    if (!existingWorkspace) {
+      throw new HttpError(404, "Workspace not found.");
+    }
+
+    const [workspace] = await db
+      .update(workspaces)
+      .set({
+        name,
+        description: input.description?.trim() || null,
+        updatedAt: new Date()
+      })
+      .where(eq(workspaces.id, existingWorkspace.id))
+      .returning();
+
+    const paths = await ensureWorkspaceStorage(config.storageRoot, workspace.slug);
+    let metadata: Record<string, unknown> = {};
+    try {
+      metadata = await readWorkspaceMetadata(paths);
+    } catch {
+      // Metadata is created below if this is an older workspace.
+    }
+    await writeWorkspaceMetadata(paths, {
+      ...metadata,
+      id: workspace.id,
+      name: workspace.name,
+      slug: workspace.slug,
+      description: workspace.description,
+      storagePath: workspace.storagePath,
+      updatedAt: workspace.updatedAt.toISOString()
     });
 
     return workspace;

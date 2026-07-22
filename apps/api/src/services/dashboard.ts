@@ -3,12 +3,12 @@ import path from "node:path";
 import type { ApiConfig } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
 import {
-  ensureStorageRoot,
   ensureWorkspaceStorage,
   getWorkspaceStoragePaths
 } from "./storage.js";
 import type { IndexedDocumentMetadata } from "./documents.js";
 import type { EntityIndex } from "./entities.js";
+import { listWorkspaces } from "./workspaces.js";
 
 const ignoredMetadataFiles = new Set([
   "workspace.json",
@@ -36,15 +36,7 @@ async function listJsonFiles(directory: string) {
 }
 
 async function countWorkspaces(config: ApiConfig) {
-  const storageRoot = await ensureStorageRoot(config.storageRoot);
-  const workspaceRoot = path.join(storageRoot, "workspaces");
-
-  try {
-    const entries = await readdir(workspaceRoot, { withFileTypes: true });
-    return entries.filter((entry) => entry.isDirectory()).length;
-  } catch {
-    return 0;
-  }
+  return (await listWorkspaces(config)).length;
 }
 
 export async function getDashboardSummary(
@@ -63,14 +55,13 @@ export async function getDashboardSummary(
       continue;
     }
 
-    documentCount += 1;
-
     try {
       const metadata = JSON.parse(
         await readFile(path.join(paths.metadata, fileName), "utf8")
       ) as Partial<IndexedDocumentMetadata>;
 
       if (metadata.status === "INDEXED") {
+        documentCount += 1;
         indexedDocumentCount += 1;
         chunkCount += metadata.ingestion?.chunks.length ?? 0;
       }
