@@ -1,6 +1,7 @@
 import { readWorkspaceMetadata, ensureWorkspaceStorage, writeWorkspaceMetadata } from "./storage.js";
 import type { ApiConfig } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
+import { ragRetrievalCache } from "./rag-cache.js";
 
 export type WorkspaceIngestionSettings = {
   chunkSize: number;
@@ -44,6 +45,7 @@ export async function saveWorkspaceIngestionSettings(config: ApiConfig, workspac
   try { metadata = await readWorkspaceMetadata(paths); } catch { /* Workspace metadata is created on first save. */ }
   const ingestionSettings = sanitize(value);
   await writeWorkspaceMetadata(paths, { ...metadata, slug: workspaceSlug, storagePath: paths.root, updatedAt: new Date().toISOString(), ingestionSettings });
+  ragRetrievalCache.invalidateWorkspace(workspaceSlug);
   return ingestionSettings;
 }
 

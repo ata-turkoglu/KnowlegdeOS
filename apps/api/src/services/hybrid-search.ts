@@ -34,11 +34,10 @@ export async function searchHybridDocuments(
   }
 ): Promise<HybridSearchResult> {
   const settings = await getWorkspaceIngestionSettings(config, input.workspaceSlug);
-  const entity = await searchEntityDocuments(config, input);
-  const semantic = await searchSemanticDocuments(config, {
-    ...input,
-    limit: input.limit ?? settings.semanticTopK
-  });
+  const [entity, semantic] = await Promise.all([
+    searchEntityDocuments(config, input),
+    searchSemanticDocuments(config, { ...input, limit: input.limit ?? settings.semanticTopK })
+  ]);
   const byDocument = new Map<string, HybridSearchResult["documents"][number]>();
 
   for (const document of entity.retrievedDocuments) {

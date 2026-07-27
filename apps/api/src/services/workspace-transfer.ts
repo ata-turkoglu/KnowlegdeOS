@@ -12,6 +12,7 @@ import {
   getWorkspaceStoragePaths,
   readWorkspaceMetadata
 } from "./storage.js";
+import { ragRetrievalCache } from "./rag-cache.js";
 
 const transferableDirectories = ["originals", "markdown", "metadata"] as const;
 
@@ -335,6 +336,7 @@ export async function importWorkspaceBundle(
   // source Markdown. Recreate upload records so an imported workspace is usable
   // immediately; indexes are deliberately rebuilt from that source afterwards.
   const restoredDocumentCount = await restoreWorkspaceDocuments(config, workspaceSlug);
+  ragRetrievalCache.invalidateWorkspace(workspaceSlug);
 
   return {
     imported: true,

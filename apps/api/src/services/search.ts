@@ -1,6 +1,10 @@
 import { normalizeForSearch } from "@knowledgeos/ingestion";
+import { eq } from "drizzle-orm";
+import { createDatabaseClient, workspaces } from "@knowledgeos/database";
 import type { ApiConfig } from "../config/env.js";
-import { readEntityIndex, type CanonicalEntity, type EntityAlias } from "./entities.js";
+import { type CanonicalEntity, type EntityAlias } from "./entities.js";
+import { slugify } from "../lib/slug.js";
+import type { MetadataFilters } from "./rag-core.js";
 
 export type EntitySearchResult = {
   queryType: "ENTITY_SEARCH";
@@ -26,20 +30,30 @@ export async function searchEntityDocuments(
   input: {
     workspaceSlug: string;
     query: string;
+    filters?: MetadataFilters;
   }
 ): Promise<EntitySearchResult> {
   const normalizedQuery = normalizeForSearch(extractEntityQuery(input.query));
-  const index = await readEntityIndex(config, input.workspaceSlug);
-  const scored = index.entities
-    .map((entity) => ({
-      entity,
-      score: scoreEntity(entity, normalizedQuery),
-      aliases: matchingAliases(entity, normalizedQuery)
-    }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
-
-  const best = scored[0];
+  const client = createDatabaseClient(config.databaseUrl);
+  const best = await (async () => {
+    try {
+      const [workspace] = await client.db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.slug, slugify(input.workspaceSlug))).limit(1);
+      if (!workspace || !normalizedQuery) return null;
+      const rows = await client.queryClient<{ entity_id: string; document_id: string; type: CanonicalEntity["type"]; canonical_value: string; normalized_value: string; alias: string; normalized_alias: string; confidence: number; source: string; filename: string; title: string; evidence_snippet: string; occurrence_count: number; score: number }[]>`
+        select e.id as entity_id, d.id as document_id, e.type, e.canonical_value, e.normalized_value, coalesce(a.alias, e.canonical_value) as alias, coalesce(a.normalized_alias, e.normalized_value) as normalized_alias, coalesce(a.confidence, 1)::float8 as confidence, coalesce(a.source::text, 'REGEX') as source, d.filename, d.title, de.evidence_snippet, de.occurrence_count,
+          case when e.normalized_value = ${normalizedQuery} or a.normalized_alias = ${normalizedQuery} then 100 when e.normalized_value like ${`%${normalizedQuery}%`} or a.normalized_alias like ${`%${normalizedQuery}%`} then 85 else 0 end as score
+        from entities e left join entity_aliases a on a.entity_id = e.id join document_entities de on de.entity_id = e.id join documents d on d.id = de.document_id
+        where e.workspace_id = ${workspace.id} and d.workspace_id = ${workspace.id} and d.status = 'INDEXED'
+          and (${input.filters?.year ?? null}::text is null or extract(year from d.document_date)::text = ${input.filters?.year ?? null})
+          and (${input.filters?.date ?? null}::date is null or d.document_date = ${input.filters?.date ?? null}::date)
+          and (${input.filters?.documentType ?? null}::text is null or d.document_type ilike ${input.filters?.documentType ? `%${input.filters.documentType}%` : null})
+          and (e.normalized_value = ${normalizedQuery} or a.normalized_alias = ${normalizedQuery} or e.normalized_value like ${`%${normalizedQuery}%`} or a.normalized_alias like ${`%${normalizedQuery}%`})
+        order by score desc, de.occurrence_count desc, d.filename asc limit 50`;
+      if (!rows.length) return null;
+      const first = rows[0]; const aliases: EntityAlias[] = [...new Map(rows.filter((row) => row.entity_id === first.entity_id).map((row) => [row.normalized_alias, { alias: row.alias, normalizedAlias: row.normalized_alias, confidence: Number(row.confidence), source: (row.source === "IMPORT" ? "IMPORT" : "REGEX") as EntityAlias["source"] }])).values()];
+      return { entity: { id: first.entity_id, type: first.type, canonicalValue: first.canonical_value }, aliases, documents: rows.filter((row) => row.entity_id === first.entity_id).map((row) => ({ documentId: row.document_id, documentName: slugify(row.filename.replace(/\.[^.]+$/, "")), title: row.title, markdownPath: "", occurrenceCount: Number(row.occurrence_count), evidenceSnippet: row.evidence_snippet, confidence: 1 })) };
+    } finally { await client.close(); }
+  })();
 
   if (!best) {
     return {
@@ -58,13 +72,11 @@ export async function searchEntityDocuments(
     query: input.query,
     normalizedQuery,
     matchedEntity: {
-      id: best.entity.id,
-      type: best.entity.type,
-      canonicalValue: best.entity.canonicalValue
+      id: best.entity.id, type: best.entity.type, canonicalValue: best.entity.canonicalValue
     },
     matchedAliases: best.aliases,
-    retrievedDocuments: best.entity.documents,
-    sources: best.entity.documents.map((document) => ({
+    retrievedDocuments: best.documents,
+    sources: best.documents.map((document) => ({
       documentName: document.documentName,
       title: document.title,
       evidenceSnippet: document.evidenceSnippet,

@@ -36,6 +36,8 @@
       "when": 1785200000000,
       "tag": "0004_relationship_origin",
       "breakpoints": true
-    }
+    },
+    { "idx": 5, "version": "7", "when": 1785300000000, "tag": "0005_rag_retrieval_indexes", "breakpoints": true },
+    { "idx": 6, "version": "7", "when": 1785390000000, "tag": "0006_lexical_search_index", "breakpoints": true }
   ]
 }
