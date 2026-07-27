@@ -8,13 +8,15 @@ import { getWorkspaceIngestionSettings, saveWorkspaceIngestionSettings, type Wor
 import { getWorkspaceYamlMetadataPrompt, saveWorkspaceYamlMetadataPrompt } from "../services/workspace-yaml-prompt.js";
 import { getWorkspaceChatSystemPrompt, saveWorkspaceChatSystemPrompt } from "../services/workspace-chat-prompt.js";
 import { getWorkspaceReindexStatus, reindexWorkspaceDocuments } from "../services/documents.js";
+import { invalidateCapabilities, resolveModelCapabilities } from "../services/model-capabilities.js";
 
 type OllamaTagsResponse = {
   models?: Array<{ name?: string }>;
 };
 
 type ModelKind = "llm" | "embedding";
-type Provider = "ollama" | "openai" | "gemini";
+type Provider = "ollama" | "openai" | "gemini" | "anthropic";
+type EmbeddingProvider = "ollama" | "openai" | "gemini";
 const llmTemperatureProfiles: LlmTemperatureProfile[] = ["extraction", "answer", "summary", "creative"];
 type CatalogModel = {
   name: string;
@@ -148,33 +150,62 @@ async function getGeminiModels(apiKey: string) {
     return fallback;
   }
 }
+async function getAnthropicModels(apiKey: string) {
+  const fallback = ["claude-sonnet-4-20250514", "claude-opus-4-20250514"];
+  if (!apiKey) return fallback;
+  try { const response = await fetch("https://api.anthropic.com/v1/models", { headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" } }); if (!response.ok) return fallback; const body = await response.json() as { data?: Array<{ id?: string }> }; const models = (body.data ?? []).map((item) => item.id).filter((id): id is string => Boolean(id)); return models.length ? models.sort() : fallback; } catch { return fallback; }
+}
 
 function settingsPath(config: ApiConfig) {
   return path.join(config.storageRoot, "settings", "models.json");
 }
 
 function activeLlmModel(config: ApiConfig) {
-  return config.llmProvider === "openai" ? config.openaiLlmModel : config.llmProvider === "gemini" ? config.geminiLlmModel : config.ollamaLlmModel;
+  return config.llmProvider === "openai" ? config.openaiLlmModel : config.llmProvider === "gemini" ? config.geminiLlmModel : config.llmProvider === "anthropic" ? config.anthropicLlmModel : config.ollamaLlmModel;
 }
 
 function activeEmbeddingModel(config: ApiConfig) {
   return config.embeddingProvider === "openai" ? config.openaiEmbeddingModel : config.embeddingProvider === "gemini" ? config.geminiEmbeddingModel : config.ollamaEmbeddingModel;
 }
 
+function modelLooksCompatible(provider: Provider, model: string) {
+  if (provider === "openai") return /^(gpt|o\d)/i.test(model);
+  if (provider === "gemini") return /^gemini-/i.test(model);
+  if (provider === "anthropic") return /^claude-/i.test(model);
+  return !/^(gpt|o\d|gemini-|claude-)/i.test(model);
+}
+
 async function restoreSelectedModels(config: ApiConfig) {
   try {
     const saved = JSON.parse(await readFile(settingsPath(config), "utf8")) as {
       llmModel?: string;
-      embeddingModel?: string; llmProvider?: Provider; embeddingProvider?: Provider; openaiApiKey?: string; geminiApiKey?: string;
+      embeddingModel?: string; llmProvider?: Provider; embeddingProvider?: EmbeddingProvider; openaiApiKey?: string; geminiApiKey?: string; anthropicApiKey?: string;
       llmTemperature?: number;
       llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>>;
+      ragSoftInputTokens?: number;
+      ragReservedOutputTokens?: number;
     };
-    if (saved.llmModel) config.ollamaLlmModel = saved.llmModel;
-    if (saved.embeddingModel) config.ollamaEmbeddingModel = saved.embeddingModel;
     if (saved.llmProvider) config.llmProvider = saved.llmProvider;
     if (saved.embeddingProvider) config.embeddingProvider = saved.embeddingProvider;
+    // Older settings files stored the Ollama model next to a cloud-provider
+    // selection. Ignore impossible provider/model pairs and retain the provider's
+    // configured default instead of making every chat request fail.
+    if (saved.llmModel && modelLooksCompatible(config.llmProvider, saved.llmModel)) {
+      if (config.llmProvider === "openai") config.openaiLlmModel = saved.llmModel;
+      else if (config.llmProvider === "gemini") config.geminiLlmModel = saved.llmModel;
+      else if (config.llmProvider === "anthropic") config.anthropicLlmModel = saved.llmModel;
+      else config.ollamaLlmModel = saved.llmModel;
+    }
+    if (saved.embeddingModel) {
+      if (config.embeddingProvider === "openai") config.openaiEmbeddingModel = saved.embeddingModel;
+      else if (config.embeddingProvider === "gemini") config.geminiEmbeddingModel = saved.embeddingModel;
+      else config.ollamaEmbeddingModel = saved.embeddingModel;
+    }
     if (saved.openaiApiKey) config.openaiApiKey = saved.openaiApiKey;
     if (saved.geminiApiKey) config.geminiApiKey = saved.geminiApiKey;
+    if (saved.anthropicApiKey) config.anthropicApiKey = saved.anthropicApiKey;
+    if (typeof saved.ragSoftInputTokens === "number") config.ragSoftInputTokens = Math.max(0, saved.ragSoftInputTokens);
+    if (typeof saved.ragReservedOutputTokens === "number") config.ragReservedOutputTokens = Math.max(256, saved.ragReservedOutputTokens);
     if (typeof saved.llmTemperature === "number") config.llmTemperature = Math.max(0, Math.min(2, saved.llmTemperature));
     for (const profile of llmTemperatureProfiles) {
       const value = saved.llmTemperatures?.[profile];
@@ -190,7 +221,7 @@ async function persistSelectedModels(config: ApiConfig) {
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(
     target,
-    JSON.stringify({ llmModel: config.ollamaLlmModel, embeddingModel: config.ollamaEmbeddingModel, llmProvider: config.llmProvider, embeddingProvider: config.embeddingProvider, llmTemperature: config.llmTemperature, llmTemperatures: config.llmTemperatures }, null, 2),
+    JSON.stringify({ llmModel: activeLlmModel(config), embeddingModel: activeEmbeddingModel(config), llmProvider: config.llmProvider, embeddingProvider: config.embeddingProvider, llmTemperature: config.llmTemperature, llmTemperatures: config.llmTemperatures, ragSoftInputTokens: config.ragSoftInputTokens, ragReservedOutputTokens: config.ragReservedOutputTokens }, null, 2),
     "utf8"
   );
   await writeEnvironmentValues({
@@ -204,6 +235,11 @@ async function persistSelectedModels(config: ApiConfig) {
     GEMINI_API_KEY: config.geminiApiKey,
     GEMINI_LLM_MODEL: config.geminiLlmModel,
     GEMINI_EMBEDDING_MODEL: config.geminiEmbeddingModel,
+    ANTHROPIC_API_KEY: config.anthropicApiKey,
+    ANTHROPIC_LLM_MODEL: config.anthropicLlmModel,
+    ANTHROPIC_BASE_URL: config.anthropicBaseUrl,
+    RAG_SOFT_INPUT_TOKENS: String(config.ragSoftInputTokens),
+    RAG_RESERVED_OUTPUT_TOKENS: String(config.ragReservedOutputTokens),
     LLM_TEMPERATURE: String(config.llmTemperature),
     LLM_TEMPERATURE_EXTRACTION: String(config.llmTemperatures.extraction),
     LLM_TEMPERATURE_ANSWER: String(config.llmTemperatures.answer),
@@ -236,6 +272,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     const models = await getInstalledModels(config.ollamaBaseUrl);
     const openaiModels = await getOpenAiModels(config.openaiApiKey);
     const geminiModels = await getGeminiModels(config.geminiApiKey);
+    const anthropicModels = await getAnthropicModels(config.anthropicApiKey);
+    const capabilities = await resolveModelCapabilities(config);
     return {
       llmModel: activeLlmModel(config),
       embeddingModel: activeEmbeddingModel(config),
@@ -243,21 +281,27 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
       embeddingProvider: config.embeddingProvider,
       llmTemperature: config.llmTemperature,
       llmTemperatures: config.llmTemperatures,
+      ragSoftInputTokens: config.ragSoftInputTokens,
+      ragReservedOutputTokens: config.ragReservedOutputTokens,
+      capabilities,
       openai: { configured: Boolean(config.openaiApiKey), llmModels: [...new Set([config.openaiLlmModel, ...openaiModels.llmModels])], embeddingModels: [...new Set([config.openaiEmbeddingModel, ...openaiModels.embeddingModels])] },
       gemini: { configured: Boolean(config.geminiApiKey), llmModels: [...new Set([config.geminiLlmModel, ...geminiModels.llmModels])], embeddingModels: [...new Set([config.geminiEmbeddingModel, ...geminiModels.embeddingModels])] },
+      anthropic: { configured: Boolean(config.anthropicApiKey), llmModels: [...new Set([config.anthropicLlmModel, ...anthropicModels])] },
       models,
       catalog: await getCatalog()
     };
   });
 
   app.put<{
-    Body: { llmModel?: string; embeddingModel?: string; llmProvider?: Provider; embeddingProvider?: Provider; llmTemperature?: number; llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>> };
+    Body: { llmModel?: string; embeddingModel?: string; llmProvider?: Provider; embeddingProvider?: EmbeddingProvider; llmTemperature?: number; llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number };
   }>("/api/settings/models", async (request, reply) => {
     const llmModel = request.body?.llmModel?.trim();
     const embeddingModel = request.body?.embeddingModel?.trim();
     const llmProvider = request.body?.llmProvider ?? "ollama";
     const embeddingProvider = request.body?.embeddingProvider ?? "ollama";
     const llmTemperature = request.body?.llmTemperature ?? config.llmTemperature;
+    const ragSoftInputTokens = request.body?.ragSoftInputTokens ?? config.ragSoftInputTokens;
+    const ragReservedOutputTokens = request.body?.ragReservedOutputTokens ?? config.ragReservedOutputTokens;
     const llmTemperatures = { ...config.llmTemperatures };
     for (const profile of llmTemperatureProfiles) {
       const value = request.body?.llmTemperatures?.[profile];
@@ -267,9 +311,10 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
       return reply.code(400).send({ message: "LLM and embedding models are required." });
     }
 
-    if (!["ollama", "openai", "gemini"].includes(llmProvider) || !["ollama", "openai", "gemini"].includes(embeddingProvider)) return reply.code(400).send({ message: "Invalid AI provider." });
+    if (!["ollama", "openai", "gemini", "anthropic"].includes(llmProvider) || !["ollama", "openai", "gemini"].includes(embeddingProvider)) return reply.code(400).send({ message: "Invalid AI provider." });
     if (![llmTemperature, ...Object.values(llmTemperatures)].every((value) => Number.isFinite(value) && value >= 0 && value <= 2)) return reply.code(400).send({ message: "Temperature must be between 0 and 2." });
-    if (llmProvider === "openai" && !config.openaiApiKey || embeddingProvider === "openai" && !config.openaiApiKey || llmProvider === "gemini" && !config.geminiApiKey || embeddingProvider === "gemini" && !config.geminiApiKey) return reply.code(400).send({ message: "The selected provider API key is not configured." });
+    if (!Number.isInteger(ragSoftInputTokens) || ragSoftInputTokens < 0 || !Number.isInteger(ragReservedOutputTokens) || ragReservedOutputTokens < 256) return reply.code(400).send({ message: "RAG token budgets are invalid." });
+    if (llmProvider === "openai" && !config.openaiApiKey || embeddingProvider === "openai" && !config.openaiApiKey || llmProvider === "gemini" && !config.geminiApiKey || embeddingProvider === "gemini" && !config.geminiApiKey || llmProvider === "anthropic" && !config.anthropicApiKey) return reply.code(400).send({ message: "The selected provider API key is not configured." });
     if (llmProvider === "ollama" || embeddingProvider === "ollama") {
       const installed = new Set(await getInstalledModels(config.ollamaBaseUrl));
       if ((llmProvider === "ollama" && !installed.has(llmModel)) || (embeddingProvider === "ollama" && !installed.has(embeddingModel))) return reply.code(400).send({ message: "Select installed Ollama models." });
@@ -278,10 +323,18 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     config.llmProvider = llmProvider; config.embeddingProvider = embeddingProvider;
     config.llmTemperature = llmTemperature;
     config.llmTemperatures = llmTemperatures;
-    if (llmProvider === "ollama") config.ollamaLlmModel = llmModel; else if (llmProvider === "openai") config.openaiLlmModel = llmModel; else config.geminiLlmModel = llmModel;
+    config.ragSoftInputTokens = ragSoftInputTokens;
+    config.ragReservedOutputTokens = ragReservedOutputTokens;
+    if (llmProvider === "ollama") config.ollamaLlmModel = llmModel; else if (llmProvider === "openai") config.openaiLlmModel = llmModel; else if (llmProvider === "gemini") config.geminiLlmModel = llmModel; else config.anthropicLlmModel = llmModel;
     if (embeddingProvider === "ollama") config.ollamaEmbeddingModel = embeddingModel; else if (embeddingProvider === "openai") config.openaiEmbeddingModel = embeddingModel; else config.geminiEmbeddingModel = embeddingModel;
+    invalidateCapabilities();
     await persistSelectedModels(config);
-    return { llmModel, embeddingModel, llmTemperature, llmTemperatures };
+    return { llmModel, embeddingModel, llmTemperature, llmTemperatures, ragSoftInputTokens, ragReservedOutputTokens, capabilities: await resolveModelCapabilities(config, true) };
+  });
+
+  app.post("/api/settings/model-capabilities/refresh", async () => {
+    invalidateCapabilities();
+    return { capabilities: await resolveModelCapabilities(config, true) };
   });
 
   app.get<{ Params: { workspaceSlug: string } }>("/api/settings/ingestion/:workspaceSlug", async (request) => ({
@@ -380,7 +433,9 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     if (!apiKey) return reply.code(400).send({ message: "API key is required." });
     if (request.params.provider === "openai") config.openaiApiKey = apiKey;
     else if (request.params.provider === "gemini") config.geminiApiKey = apiKey;
+    else if (request.params.provider === "anthropic") config.anthropicApiKey = apiKey;
     else return reply.code(400).send({ message: "Unsupported API key provider." });
+    invalidateCapabilities();
     await persistSelectedModels(config);
     return { provider: request.params.provider, configured: true };
   });

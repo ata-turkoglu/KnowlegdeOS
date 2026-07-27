@@ -11,9 +11,11 @@ const languageOptions = [
 ];
 
 const apiBaseUrl = "http://127.0.0.1:4000";
-const providerOptions = [{ label: "Ollama", value: "ollama" }, { label: "OpenAI", value: "openai" }, { label: "Google Gemini", value: "gemini" }];
+const providerOptions = [{ label: "Ollama", value: "ollama" }, { label: "OpenAI", value: "openai" }, { label: "Google Gemini", value: "gemini" }, { label: "Anthropic Claude", value: "anthropic" }];
+const embeddingProviderOptions = providerOptions.filter((provider) => provider.value !== "anthropic");
 const defaultIngestionValues = { chunkSize: "450", chunkOverlap: "60", similarityThreshold: "0.25" };
 type LlmTemperatures = { extraction: number; answer: number; summary: number; creative: number };
+type ModelCapabilities = { provider: string; model: string; inputTokenLimit: number | null; outputTokenLimit: number | null; runtimeContextLimit?: number | null; supportsTokenCounting: boolean; source: string; discoveredAt: string; warning?: string };
 const defaultLlmTemperatures: LlmTemperatures = { extraction: 0.1, answer: 0.3, summary: 0.3, creative: 0.7 };
 
 export function SettingsPanel() {
@@ -25,6 +27,10 @@ export function SettingsPanel() {
   const [llmProvider, setLlmProvider] = useState("ollama");
   const [embeddingProvider, setEmbeddingProvider] = useState("ollama");
   const [llmTemperatures, setLlmTemperatures] = useState<LlmTemperatures>(defaultLlmTemperatures);
+  const [ragSoftInputTokens, setRagSoftInputTokens] = useState("0");
+  const [ragReservedOutputTokens, setRagReservedOutputTokens] = useState("1024");
+  const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
+  const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [chunkSize, setChunkSize] = useState("450");
   const [chunkOverlap, setChunkOverlap] = useState("60");
   const [similarityThreshold, setSimilarityThreshold] = useState("0.25");
@@ -33,7 +39,7 @@ export function SettingsPanel() {
   const [reindexOperationId, setReindexOperationId] = useState<string | null>(null);
   const [reindexProgress, setReindexProgress] = useState<{ completed: number; total: number; documentName?: string } | null>(null);
   const [useLlmForReindex, setUseLlmForReindex] = useState(false);
-  const [cloudModels, setCloudModels] = useState<{ openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] } }>({ openai: { configured: false, llmModels: [], embeddingModels: [] }, gemini: { configured: false, llmModels: [], embeddingModels: [] } });
+  const [cloudModels, setCloudModels] = useState<{ openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[]; embeddingModels: string[] } }>({ openai: { configured: false, llmModels: [], embeddingModels: [] }, gemini: { configured: false, llmModels: [], embeddingModels: [] }, anthropic: { configured: false, llmModels: [], embeddingModels: [] } });
   const [models, setModels] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }>>([]);
   const [llmToDownload, setLlmToDownload] = useState("");
@@ -57,7 +63,7 @@ export function SettingsPanel() {
     fetch(`${apiBaseUrl}/api/settings/models`)
       .then(async (response) => {
         if (!response.ok) throw new Error("Model list could not be loaded.");
-        return response.json() as Promise<{ llmModel: string; embeddingModel: string; llmProvider?: string; embeddingProvider?: string; llmTemperatures?: Partial<LlmTemperatures>; models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; catalog: Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }> }>;
+        return response.json() as Promise<{ llmModel: string; embeddingModel: string; llmProvider?: string; embeddingProvider?: string; llmTemperatures?: Partial<LlmTemperatures>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number; capabilities?: ModelCapabilities; models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[] }; catalog: Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }> }>;
       })
       .then((settings) => {
         setLlmModel(settings.llmModel);
@@ -66,13 +72,16 @@ export function SettingsPanel() {
         setCatalog(settings.catalog);
         setLlmProvider(settings.llmProvider ?? "ollama");
         setEmbeddingProvider(settings.embeddingProvider ?? "ollama");
+        setRagSoftInputTokens(String(settings.ragSoftInputTokens ?? 0));
+        setRagReservedOutputTokens(String(settings.ragReservedOutputTokens ?? 1024));
+        setCapabilities(settings.capabilities ?? null);
         setLlmTemperatures({
           extraction: settings.llmTemperatures?.extraction ?? defaultLlmTemperatures.extraction,
           answer: settings.llmTemperatures?.answer ?? defaultLlmTemperatures.answer,
           summary: settings.llmTemperatures?.summary ?? defaultLlmTemperatures.summary,
           creative: settings.llmTemperatures?.creative ?? defaultLlmTemperatures.creative
         });
-        setCloudModels({ openai: settings.openai, gemini: settings.gemini });
+        setCloudModels({ openai: settings.openai, gemini: settings.gemini, anthropic: { ...settings.anthropic, embeddingModels: [] } });
       })
       .catch(() => setMessage(language === "tr" ? "Ollama modelleri yüklenemedi." : "Ollama models could not be loaded."))
       .finally(() => setLoading(false));
@@ -130,17 +139,41 @@ export function SettingsPanel() {
     }
 
     if (!llmModel || !embeddingModel) return;
+    const softInputTokens = Number(ragSoftInputTokens);
+    const reservedOutputTokens = Number(ragReservedOutputTokens);
+    if (!Number.isInteger(softInputTokens) || softInputTokens < 0 || !Number.isInteger(reservedOutputTokens) || reservedOutputTokens < 256) {
+      setMessage(language === "tr" ? "RAG token bütçeleri geçersiz." : "RAG token budgets are invalid.");
+      return;
+    }
     const response = await fetch(`${apiBaseUrl}/api/settings/models`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ llmModel, embeddingModel, llmProvider, embeddingProvider, llmTemperatures: Object.fromEntries(Object.entries(llmTemperatures).map(([profile, temperature]) => [profile, Number(temperature)])) })
+      body: JSON.stringify({ llmModel, embeddingModel, llmProvider, embeddingProvider, ragSoftInputTokens: softInputTokens, ragReservedOutputTokens: reservedOutputTokens, llmTemperatures: Object.fromEntries(Object.entries(llmTemperatures).map(([profile, temperature]) => [profile, Number(temperature)])) })
     });
     if (!response.ok) {
       setMessage(language === "tr" ? "Model ayarları kaydedilemedi." : "Model settings could not be saved.");
       return;
     }
+    const result = await response.json() as { capabilities?: ModelCapabilities };
+    setCapabilities(result.capabilities ?? null);
     window.dispatchEvent(new Event("knowledgeos:model-settings-changed"));
     setMessage(language === "tr" ? "Model ayarları kaydedildi." : "Model settings saved.");
+  }
+
+  async function refreshModelCapabilities() {
+    setRefreshingCapabilities(true);
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/settings/model-capabilities/refresh`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      if (!response.ok) throw new Error("Capability discovery failed.");
+      const result = await response.json() as { capabilities: ModelCapabilities };
+      setCapabilities(result.capabilities);
+      setMessage(language === "tr" ? "Model kapasitesi yenilendi." : "Model capabilities refreshed.");
+    } catch {
+      setMessage(language === "tr" ? "Model kapasitesi yenilenemedi." : "Model capabilities could not be refreshed.");
+    } finally {
+      setRefreshingCapabilities(false);
+    }
   }
 
   function resetIngestionSettings() {
@@ -239,7 +272,7 @@ export function SettingsPanel() {
     }
   }
 
-  async function saveApiKey(provider: "openai" | "gemini") {
+  async function saveApiKey(provider: "openai" | "gemini" | "anthropic") {
     if (!apiKey.trim()) return;
     setSavingApiKey(true);
     try {
@@ -247,9 +280,9 @@ export function SettingsPanel() {
       if (!response.ok) throw new Error("API key could not be saved.");
       const settingsResponse = await fetch(`${apiBaseUrl}/api/settings/models`);
       if (!settingsResponse.ok) throw new Error("Model list could not be refreshed.");
-      const settings = await settingsResponse.json() as { models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] } };
+      const settings = await settingsResponse.json() as { models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[]; embeddingModels: string[] } };
       setModels(settings.models);
-      setCloudModels({ openai: settings.openai, gemini: settings.gemini });
+      setCloudModels({ openai: settings.openai, gemini: settings.gemini, anthropic: { ...settings.anthropic, embeddingModels: [] } });
       setApiKey("");
       const providerModels = settings[provider];
       setMessage(language === "tr" ? `API anahtarı eklendi. ${providerModels.llmModels.length} LLM ve ${providerModels.embeddingModels.length} embedding modeli yüklendi.` : `API key added. ${providerModels.llmModels.length} LLM and ${providerModels.embeddingModels.length} embedding models loaded.`);
@@ -261,7 +294,7 @@ export function SettingsPanel() {
   function selectLlmProvider(provider: string) {
     setLlmProvider(provider);
     setApiKey("");
-    const options = provider === "ollama" ? installedLlmOptions : cloudModels[provider as "openai" | "gemini"].llmModels;
+    const options = provider === "ollama" ? installedLlmOptions : cloudModels[provider as "openai" | "gemini" | "anthropic"].llmModels;
     if (options[0]) setLlmModel(typeof options[0] === "string" ? options[0] : options[0].value);
   }
 
@@ -278,7 +311,7 @@ export function SettingsPanel() {
   const installedEmbeddingOptions = models
     .filter((model) => catalog.some((entry) => entry.name === model.replace(/:.+$/, "") && entry.kind === "embedding"))
     .map((model) => ({ label: `Ollama / ${model}`, value: model }));
-  const llmOptions = llmProvider === "ollama" ? installedLlmOptions : [...new Set(cloudModels[llmProvider as "openai" | "gemini"].llmModels)].map((model) => ({ label: model, value: model }));
+  const llmOptions = llmProvider === "ollama" ? installedLlmOptions : [...new Set(cloudModels[llmProvider as "openai" | "gemini" | "anthropic"].llmModels)].map((model) => ({ label: model, value: model }));
   const embeddingOptions = embeddingProvider === "ollama" ? installedEmbeddingOptions : [...new Set(cloudModels[embeddingProvider as "openai" | "gemini"].embeddingModels)].map((model) => ({ label: model, value: model }));
   const dialogModels = catalog
     .filter((model) => model.kind === downloadDialog)
@@ -372,12 +405,35 @@ export function SettingsPanel() {
         {activeTab === 1 ? <label>
           {language === "tr" ? "LLM modeli" : "LLM model"}
           <div className="settings-model-control">
-            <ADropdown value={llmModel} options={llmOptions} disabled={loading || (llmProvider !== "ollama" && !cloudModels[llmProvider as "openai" | "gemini"].configured)} onChange={(event) => setLlmModel(String(event.value))} />
+            <ADropdown value={llmModel} options={llmOptions} disabled={loading || (llmProvider !== "ollama" && !cloudModels[llmProvider as "openai" | "gemini" | "anthropic"].configured)} onChange={(event) => setLlmModel(String(event.value))} />
             {llmProvider === "ollama" ? <AButton className="settings-model-add" tone="secondary" onClick={() => { setModelFilter(""); setDownloadDialog("llm"); }} disabled={loading} aria-label={language === "tr" ? "LLM indir" : "Download LLM"}>
               <i className="pi pi-plus" aria-hidden="true" />
             </AButton> : null}
           </div>
         </label> : null}
+
+        {activeTab === 1 ? <section className="settings-note">
+          <strong>{language === "tr" ? "Dinamik bağlam bütçesi" : "Dynamic context budget"}</strong>
+          <p>
+            {capabilities
+              ? `${capabilities.model}: ${capabilities.inputTokenLimit?.toLocaleString() ?? "?"} input / ${capabilities.outputTokenLimit?.toLocaleString() ?? "?"} output tokens (${capabilities.source})${capabilities.runtimeContextLimit ? `, runtime ${capabilities.runtimeContextLimit.toLocaleString()}` : ""}`
+              : language === "tr" ? "Model kapasitesi henüz okunmadı." : "Model capabilities have not been discovered yet."}
+          </p>
+          {capabilities?.warning ? <p>{capabilities.warning}</p> : null}
+          <div className="settings-temperature-profiles">
+            <label>
+              {language === "tr" ? "Yumuşak input limiti (0 = otomatik)" : "Soft input limit (0 = automatic)"}
+              <AInput type="number" min="0" step="256" value={ragSoftInputTokens} onChange={(event) => setRagSoftInputTokens(event.target.value)} />
+            </label>
+            <label>
+              {language === "tr" ? "Yanıt için ayrılan token" : "Reserved output tokens"}
+              <AInput type="number" min="256" step="256" value={ragReservedOutputTokens} onChange={(event) => setRagReservedOutputTokens(event.target.value)} />
+            </label>
+          </div>
+          <AButton type="button" tone="secondary" onClick={() => void refreshModelCapabilities()} disabled={refreshingCapabilities || loading}>
+            {refreshingCapabilities ? (language === "tr" ? "Yenileniyor..." : "Refreshing...") : language === "tr" ? "Kapasiteyi yenile" : "Refresh capabilities"}
+          </AButton>
+        </section> : null}
 
         {activeTab === 1 ? <div className="settings-temperature-profiles">
           <label>
@@ -410,11 +466,11 @@ export function SettingsPanel() {
           </label>
         </div> : null}
 
-        {activeTab === 1 && llmProvider !== "ollama" ? <div className="settings-api-key"><AInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={cloudModels[llmProvider as "openai" | "gemini"].configured ? "••••••••••••••••" : `${llmProvider === "openai" ? "OpenAI" : "Gemini"} API key`} /><AButton onClick={() => void saveApiKey(llmProvider as "openai" | "gemini")} disabled={savingApiKey || !apiKey.trim()}>{cloudModels[llmProvider as "openai" | "gemini"].configured ? (language === "tr" ? "Güncelle" : "Update") : language === "tr" ? "Ekle" : "Add"}</AButton></div> : null}
+        {activeTab === 1 && llmProvider !== "ollama" ? <div className="settings-api-key"><AInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={cloudModels[llmProvider as "openai" | "gemini" | "anthropic"].configured ? "••••••••••••••••" : `${llmProvider === "anthropic" ? "Anthropic" : llmProvider === "openai" ? "OpenAI" : "Gemini"} API key`} /><AButton onClick={() => void saveApiKey(llmProvider as "openai" | "gemini" | "anthropic")} disabled={savingApiKey || !apiKey.trim()}>{cloudModels[llmProvider as "openai" | "gemini" | "anthropic"].configured ? (language === "tr" ? "Güncelle" : "Update") : language === "tr" ? "Ekle" : "Add"}</AButton></div> : null}
 
         {activeTab === 2 ? <label>
           {language === "tr" ? "Embedding sağlayıcısı" : "Embedding provider"}
-          <ADropdown value={embeddingProvider} options={providerOptions} onChange={(event) => selectEmbeddingProvider(String(event.value))} />
+          <ADropdown value={embeddingProvider} options={embeddingProviderOptions} onChange={(event) => selectEmbeddingProvider(String(event.value))} />
         </label> : null}
 
         {activeTab === 2 && embeddingProvider !== "ollama" ? <div className="settings-api-key"><AInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={cloudModels[embeddingProvider as "openai" | "gemini"].configured ? "••••••••••••••••" : `${embeddingProvider === "openai" ? "OpenAI" : "Gemini"} API key`} /><AButton onClick={() => void saveApiKey(embeddingProvider as "openai" | "gemini")} disabled={savingApiKey || !apiKey.trim()}>{cloudModels[embeddingProvider as "openai" | "gemini"].configured ? (language === "tr" ? "Güncelle" : "Update") : language === "tr" ? "Ekle" : "Add"}</AButton></div> : null}
