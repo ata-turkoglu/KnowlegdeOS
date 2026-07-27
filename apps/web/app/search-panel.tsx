@@ -37,6 +37,11 @@ type SearchResponse = {
   matchedAliases?: Array<{
     alias: string;
   }>;
+  entity?: {
+    matchedAliases?: Array<{
+      alias: string;
+    }>;
+  };
   retrievedDocuments?: SearchDocument[];
   results?: Array<{
     documentName: string;
@@ -54,6 +59,20 @@ type SearchResponse = {
   };
 };
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightMatches(text: string, terms: string[]) {
+  const validTerms = [...new Set(terms.map((term) => term.trim()).filter(Boolean))].sort((left, right) => right.length - left.length);
+  if (!validTerms.length) return text;
+
+  const expression = new RegExp(`(${validTerms.map(escapeRegExp).join("|")})`, "giu");
+  return text.split(expression).map((part, index) =>
+    index % 2 === 1 ? <mark key={`${part}-${index}`}>{part}</mark> : part
+  );
+}
+
 export function SearchPanel() {
   const { language } = useLanguage();
   const isEnglish = language === "en";
@@ -64,6 +83,10 @@ export function SearchPanel() {
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [message, setMessage] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [expandedSource, setExpandedSource] = useState<string | null>(null);
+  const [sourceContent, setSourceContent] = useState<Record<string, string>>({});
+  const [loadingSource, setLoadingSource] = useState<string | null>(null);
+  const [sourceErrors, setSourceErrors] = useState<Record<string, string>>({});
 
   async function runSearch() {
     if (!query.trim()) {
@@ -101,7 +124,43 @@ export function SearchPanel() {
     }
 
     setResponse(body);
+    setExpandedSource(null);
+    setSourceContent({});
+    setSourceErrors({});
     setMessage(isEnglish ? `${body.queryType} results loaded.` : `${body.queryType} sonucu yüklendi.`);
+  }
+
+  async function toggleSource(documentName: string) {
+    if (expandedSource === documentName) {
+      setExpandedSource(null);
+      return;
+    }
+
+    setExpandedSource(documentName);
+    if (sourceContent[documentName] || loadingSource === documentName) return;
+
+    setLoadingSource(documentName);
+    setSourceErrors((current) => {
+      const { [documentName]: _removed, ...remaining } = current;
+      return remaining;
+    });
+    try {
+      const result = await fetch(
+        `${apiBaseUrl}/api/documents/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(documentName)}`
+      );
+      const body = await result.json() as { markdown?: string; error?: string };
+      if (!result.ok) {
+        throw new Error(body.error ?? (isEnglish ? "Document content could not be loaded." : "Belge içeriği yüklenemedi."));
+      }
+      setSourceContent((current) => ({ ...current, [documentName]: body.markdown ?? "" }));
+    } catch (error) {
+      setSourceErrors((current) => ({
+        ...current,
+        [documentName]: error instanceof Error ? error.message : (isEnglish ? "Document content could not be loaded." : "Belge içeriği yüklenemedi.")
+      }));
+    } finally {
+      setLoadingSource(null);
+    }
   }
 
   const documents: SearchDocument[] =
@@ -115,6 +174,26 @@ export function SearchPanel() {
       evidenceSnippet: result.snippet
     })) ??
     [];
+
+  const sourceDocuments = Array.from(
+    (response?.sources ?? []).reduce<Map<string, { documentName: string; matchTypes: Array<"ENTITY" | "SEMANTIC"> }>>(
+      (byDocument, source) => {
+        const matchType = source.sourceType ?? (response?.queryType === "ENTITY_SEARCH" ? "ENTITY" : "SEMANTIC");
+        const existing = byDocument.get(source.documentName);
+        if (existing) {
+          if (!existing.matchTypes.includes(matchType)) existing.matchTypes.push(matchType);
+        } else {
+          byDocument.set(source.documentName, { documentName: source.documentName, matchTypes: [matchType] });
+        }
+        return byDocument;
+      },
+      new Map()
+    ).values()
+  );
+  const matchedAliases = response?.matchedAliases ?? response?.entity?.matchedAliases ?? [];
+  const highlightTerms = matchedAliases.length > 0
+    ? matchedAliases.map((alias) => alias.alias)
+    : [response?.query ?? query];
 
   return (
     <section className="panel search-panel">
@@ -206,7 +285,13 @@ export function SearchPanel() {
           <div className="search-results-grid">
           <section className="search-result-section">
             <div className="search-section-heading">
-              <h4><i className="pi pi-file" aria-hidden="true" /> {isEnglish ? "Results" : "Sonuçlar"}</h4>
+              <h4>
+                <i className="pi pi-file" aria-hidden="true" /> {isEnglish ? "Results" : "Sonuçlar"}
+                <AInfo
+                  description={isEnglish ? "The document sections that best match your search." : "Aramanızla en iyi eşleşen belge bölümleridir."}
+                  position="top"
+                />
+              </h4>
               <span>{documents.length}</span>
             </div>
           <div className="search-documents">
@@ -220,7 +305,7 @@ export function SearchPanel() {
                   {document.entityMatched ? (
                     <AIcon
                       icon={<i className="pi pi-equals" />}
-                      tooltip={isEnglish ? "Entity match" : "Varlık eşleşmesi"}
+                      tooltip={isEnglish ? "Exact match" : "Birebir eşleşme"}
                     />
                   ) : null}
                   {typeof document.semanticScore === "number" ? (
@@ -236,7 +321,7 @@ export function SearchPanel() {
                     </>
                   ) : null}
                 </div>
-                <p>{document.evidenceSnippet}</p>
+                <p>{highlightMatches(document.evidenceSnippet, highlightTerms)}</p>
               </article>
             ))}
           </div>
@@ -244,29 +329,45 @@ export function SearchPanel() {
 
           <section className="search-result-section">
             <div className="search-section-heading">
-              <h4><i className="pi pi-link" aria-hidden="true" /> {isEnglish ? "Sources" : "Kaynaklar"}</h4>
-              <span>{response.sources.length}</span>
+              <h4>
+                <i className="pi pi-link" aria-hidden="true" /> {isEnglish ? "Sources" : "Kaynaklar"}
+                <AInfo
+                  description={isEnglish ? "The original documents from which the results were retrieved." : "Sonuçların alındığı özgün belgelerdir."}
+                  position="top"
+                />
+              </h4>
+              <span>{sourceDocuments.length}</span>
             </div>
           <div className="source-list search-source-list">
-            {response.sources.map((source, index) => (
-              <article key={`${source.documentName}-${source.sourceType ?? "source"}-${index}`}>
-                <strong>{source.documentName}</strong>
-                <span>{source.title}</span>
-                <div className="document-stats">
-                  {source.sourceType ? (
-                    <AIcon
-                      icon={<i className={source.sourceType === "ENTITY" ? "pi pi-equals" : "pi pi-sparkles"} />}
-                      tooltip={source.sourceType === "ENTITY" ? (isEnglish ? "Entity match" : "Varlık eşleşmesi") : (isEnglish ? "Semantic match" : "Anlamsal eşleşme")}
-                    />
-                  ) : null}
-                  {typeof source.score === "number" ? (
-                    <AIcon
-                      icon={<i className="pi pi-chart-line" />}
-                      tooltip={`${isEnglish ? "Semantic score" : "Anlamsal skor"}: ${source.score.toFixed(3)}`}
-                    />
-                  ) : null}
-                </div>
-                <p>{source.evidenceSnippet}</p>
+            {sourceDocuments.map((source) => (
+              <article key={source.documentName}>
+                <button
+                  type="button"
+                  className="search-source-trigger"
+                  onClick={() => void toggleSource(source.documentName)}
+                  aria-expanded={expandedSource === source.documentName}
+                >
+                  <strong>{source.documentName}</strong>
+                  <span className="search-source-icons">
+                    {source.matchTypes.map((matchType) => (
+                      <AIcon
+                        key={matchType}
+                        icon={<i className={matchType === "ENTITY" ? "pi pi-equals" : "pi pi-sparkles"} />}
+                        tooltip={matchType === "ENTITY" ? (isEnglish ? "Exact match" : "Birebir eşleşme") : (isEnglish ? "Semantic match" : "Anlamsal eşleşme")}
+                      />
+                    ))}
+                    <i className={`pi ${expandedSource === source.documentName ? "pi-chevron-up" : "pi-chevron-down"}`} aria-hidden="true" />
+                  </span>
+                </button>
+                {expandedSource === source.documentName ? (
+                  loadingSource === source.documentName ? (
+                    <p className="search-source-content">{isEnglish ? "Loading document..." : "Belge yükleniyor..."}</p>
+                  ) : sourceErrors[source.documentName] ? (
+                    <p className="search-source-content">{sourceErrors[source.documentName]}</p>
+                  ) : (
+                    <pre className="search-source-content">{sourceContent[source.documentName]}</pre>
+                  )
+                ) : null}
               </article>
             ))}
           </div>

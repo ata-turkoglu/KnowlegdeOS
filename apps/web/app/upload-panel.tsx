@@ -206,12 +206,14 @@ export function UploadPanel() {
         const activeEmbeddingOperation = operations.find((operation) => operation.kind === "embedding" && operation.status === "running") ?? null;
         setEmbeddingOperation(activeEmbeddingOperation);
         setIsEmbedding(activeEmbeddingOperation !== null);
-        const latestIndex = operations.find((operation) => operation.kind === "index" && (operation.documentNames?.length || operation.targetName.length > 0));
-        if (!latestIndex) return;
-        const documentNames = latestIndex.documentNames ?? latestIndex.targetName.split(", ").filter(Boolean);
+        // Only restore an in-progress index operation. Restoring completed operations
+        // makes a list the user cleared reappear whenever this page is refreshed.
+        const activeIndex = operations.find((operation) => operation.kind === "index" && operation.status === "running" && (operation.documentNames?.length || operation.targetName.length > 0));
+        if (!activeIndex) return;
+        const documentNames = activeIndex.documentNames ?? activeIndex.targetName.split(", ").filter(Boolean);
         setUploadedDocuments(documentNames.map((documentName) => ({ workspaceSlug, documentName, title: documentName, markdownPath: "", metadataPath: "" })));
-        setIndexingProgress({ completed: latestIndex.status === "completed" ? documentNames.length : Math.round((latestIndex.progress / 100) * documentNames.length), total: documentNames.length });
-        setIsIndexing(latestIndex.status === "running");
+        setIndexingProgress({ completed: Math.round((activeIndex.progress / 100) * documentNames.length), total: documentNames.length });
+        setIsIndexing(true);
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -628,7 +630,7 @@ export function UploadPanel() {
           <AButton className="upload-submit" type="button" onClick={uploadDocuments} disabled={isUploading || isIndexing || isEmbedding || hasBlockedFiles} aria-label={isEnglish ? "Upload files" : "Dosyaları yükle"}>
             {isUploading ? (isEnglish ? "Uploading..." : "Yükleniyor...") : isEnglish ? "Upload Markdown files" : "Markdown dosyalarını yükle"}
           </AButton>
-          <AButton className="upload-clear" type="button" tone="secondary" onClick={() => void clearUploadList()} disabled={isUploading || isIndexing || isEmbedding || markdownFiles.length === 0}>
+          <AButton className="upload-clear" type="button" tone="secondary" onClick={() => void clearUploadList()} disabled={isUploading || isIndexing || isEmbedding || (markdownFiles.length === 0 && uploadedDocuments.length === 0 && uploadingFileNames.length === 0)}>
             {isEnglish ? "Clear" : "Temizle"}
           </AButton>
           {isUploading || isIndexing || isEmbedding ? (

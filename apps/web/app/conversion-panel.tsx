@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AButton, AFileInput, AInput, ATextarea } from "../components/ui";
+import { AButton, ADialog, AFileInput, AIcon, AInput, ATextarea } from "../components/ui";
 import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
@@ -13,7 +13,10 @@ type ConvertedFile = {
   sourceOriginal: string;
   size: number;
   convertedAt: string;
+  hasYaml: boolean;
 };
+
+type YamlFilter = "all" | "with-yaml" | "without-yaml";
 
 export function ConversionPanel() {
   const { language } = useLanguage();
@@ -23,12 +26,21 @@ export function ConversionPanel() {
   const [fileInputKey, setFileInputKey] = useState(0);
   const [files, setFiles] = useState<ConvertedFile[]>([]);
   const [fileQuery, setFileQuery] = useState("");
+  const [yamlFilter, setYamlFilter] = useState<YamlFilter>("all");
   const [selectedConversion, setSelectedConversion] = useState<ConvertedFile | null>(null);
   const [markdown, setMarkdown] = useState("");
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isConverting, setIsConverting] = useState(false);
-  const visibleFiles = files.filter((file) => file.filename.toLocaleLowerCase().includes(fileQuery.trim().toLocaleLowerCase()));
+  const [yamlGeneratingFile, setYamlGeneratingFile] = useState<string | null>(null);
+  const [yamlPromptVisible, setYamlPromptVisible] = useState(false);
+  const [yamlPrompt, setYamlPrompt] = useState("");
+  const [isLoadingYamlPrompt, setIsLoadingYamlPrompt] = useState(false);
+  const [isSavingYamlPrompt, setIsSavingYamlPrompt] = useState(false);
+  const [yamlPromptLlmModel, setYamlPromptLlmModel] = useState("");
+  const visibleFiles = files.filter((file) => file.filename.toLocaleLowerCase().includes(fileQuery.trim().toLocaleLowerCase())
+    && (yamlFilter === "all" || (yamlFilter === "with-yaml" ? file.hasYaml : !file.hasYaml)));
+  const yamlMissingFiles = files.filter((file) => !file.hasYaml);
 
   async function loadFiles() {
     setIsLoading(true);
@@ -44,6 +56,50 @@ export function ConversionPanel() {
   }
 
   useEffect(() => { void loadFiles(); }, [workspaceSlug]);
+
+  async function openYamlPrompt() {
+    setYamlPromptVisible(true);
+    setIsLoadingYamlPrompt(true);
+    setYamlPromptLlmModel("");
+    setMessage("");
+    try {
+      const [response, modelsResponse] = await Promise.all([
+        fetch(`${apiBaseUrl}/api/settings/yaml-metadata-prompt/${encodeURIComponent(workspaceSlug)}`),
+        fetch(`${apiBaseUrl}/api/settings/models`)
+      ]);
+      const body = await response.json() as { prompt?: string; error?: string };
+      if (!response.ok) throw new Error(body.error ?? "YAML metadata prompt could not be loaded.");
+      setYamlPrompt(body.prompt ?? "");
+      if (modelsResponse.ok) {
+        const models = await modelsResponse.json() as { llmModel?: string };
+        setYamlPromptLlmModel(models.llmModel ?? "");
+      } else {
+        setYamlPromptLlmModel("");
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "YAML metadata prompt could not be loaded.");
+    } finally {
+      setIsLoadingYamlPrompt(false);
+    }
+  }
+
+  async function saveYamlPrompt() {
+    if (!yamlPrompt.trim()) return;
+    setIsSavingYamlPrompt(true);
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/settings/yaml-metadata-prompt/${encodeURIComponent(workspaceSlug)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: yamlPrompt }) });
+      const body = await response.json() as { prompt?: string; error?: string };
+      if (!response.ok) throw new Error(body.error ?? "YAML metadata prompt could not be saved.");
+      setYamlPrompt(body.prompt ?? yamlPrompt.trim());
+      setYamlPromptVisible(false);
+      setMessage(isEnglish ? "YAML metadata prompt saved." : "YAML metadata promptu kaydedildi.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "YAML metadata prompt could not be saved.");
+    } finally {
+      setIsSavingYamlPrompt(false);
+    }
+  }
 
   async function selectFile(file: ConvertedFile) {
     setSelectedConversion(file);
@@ -111,6 +167,43 @@ export function ConversionPanel() {
     }
   }
 
+  async function generateYaml(file: ConvertedFile) {
+    setYamlGeneratingFile(file.filename);
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/conversions/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(file.filename)}/generate-yaml`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "YAML metadata could not be generated.");
+      await loadFiles();
+      if (selectedConversion?.filename === file.filename) await selectFile({ ...file, hasYaml: true });
+      setMessage(isEnglish ? `${file.filename}: YAML metadata created.` : `${file.filename}: YAML metadata oluşturuldu.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "YAML metadata could not be generated.");
+    } finally {
+      setYamlGeneratingFile(null);
+    }
+  }
+
+  async function generateYamlForFiles(targetFiles: ConvertedFile[]) {
+    if (targetFiles.length === 0) return;
+    setMessage("");
+    try {
+      for (const [index, file] of targetFiles.entries()) {
+        setYamlGeneratingFile(file.filename);
+        setMessage(isEnglish ? `Generating YAML ${index + 1}/${targetFiles.length}: ${file.filename}` : `YAML oluşturuluyor ${index + 1}/${targetFiles.length}: ${file.filename}`);
+        const response = await fetch(`${apiBaseUrl}/api/conversions/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(file.filename)}/generate-yaml`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        const body = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(`${file.filename}: ${body.error ?? "YAML metadata could not be generated."}`);
+      }
+      await loadFiles();
+      setMessage(isEnglish ? `YAML metadata created for ${targetFiles.length} file(s).` : `${targetFiles.length} dosya için YAML metadata oluşturuldu.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "YAML metadata could not be generated.");
+    } finally {
+      setYamlGeneratingFile(null);
+    }
+  }
+
   return <section className="conversion-layout">
     <div className="panel conversion-upload-card">
       <div>
@@ -127,12 +220,23 @@ export function ConversionPanel() {
     </div>
 
     <div className="panel conversion-files-card">
-      <div>
-        <p className="eyebrow">{isEnglish ? "Project files" : "Proje dosyaları"}</p>
-        <h3>{isEnglish ? "Converted Markdown" : "Dönüştürülen Markdown"}</h3>
-        <p>{isEnglish ? `${files.length} converted file${files.length === 1 ? "" : "s"} stored in the project's converted-markdown folder.` : `Proje içindeki converted-markdown klasöründe ${files.length} dönüştürülmüş dosya saklanır.`}</p>
+      <div className="conversion-files-header">
+        <div>
+          <p className="eyebrow">{isEnglish ? "Project files" : "Proje dosyaları"}</p>
+          <h3>{isEnglish ? "Converted Markdown" : "Dönüştürülen Markdown"}</h3>
+          <p>{isEnglish ? `${files.length} converted file${files.length === 1 ? "" : "s"} stored in the project's converted-markdown folder.` : `Proje içindeki converted-markdown klasöründe ${files.length} dönüştürülmüş dosya saklanır.`}</p>
+        </div>
+        <AButton type="button" tone="secondary" onClick={() => void openYamlPrompt()} disabled={yamlGeneratingFile !== null}>{isEnglish ? "YAML prompt" : "YAML promptu"}</AButton>
+      </div>
+      <div className="conversion-file-tools">
+        <strong>{isEnglish ? `${files.length} files` : `${files.length} dosya`}</strong>
+        <div className="conversion-yaml-filters" aria-label={isEnglish ? "YAML metadata filters" : "YAML metadata filtreleri"}>
+          {(["all", "with-yaml", "without-yaml"] as YamlFilter[]).map((filter) => <AButton key={filter} type="button" tone="secondary" className={yamlFilter === filter ? "is-active" : undefined} onClick={() => setYamlFilter(filter)} disabled={yamlGeneratingFile !== null}>{filter === "all" ? (isEnglish ? "All" : "Tümü") : filter === "with-yaml" ? (isEnglish ? "YAML added" : "YAML eklendi") : (isEnglish ? "YAML missing" : "YAML yok")}</AButton>)}
+        </div>
+        {yamlMissingFiles.length ? <AButton type="button" tone="secondary" onClick={() => void generateYamlForFiles(yamlMissingFiles)} disabled={yamlGeneratingFile !== null}>{isEnglish ? `Add YAML to all (${yamlMissingFiles.length})` : `Tümüne YAML ekle (${yamlMissingFiles.length})`}</AButton> : null}
       </div>
       {files.length > 0 ? <AInput className="conversion-file-search" value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} placeholder={isEnglish ? "Search files" : "Dosya ara"} aria-label={isEnglish ? "Search project files" : "Proje dosyalarında ara"} /> : null}
+      {message ? <p className="form-message" role="status">{message}</p> : null}
       <div className="conversion-file-list">
         {isLoading ? <p>{isEnglish ? "Loading..." : "Yükleniyor..."}</p> : null}
         {!isLoading && files.length === 0 ? <p>{isEnglish ? "No converted files yet." : "Henüz dönüştürülmüş dosya yok."}</p> : null}
@@ -140,9 +244,17 @@ export function ConversionPanel() {
         {visibleFiles.map((file) => <div key={file.filename} className={selectedConversion?.filename === file.filename ? "conversion-file is-active" : "conversion-file"}>
           <button type="button" onClick={() => void selectFile(file)}>
             <strong>{file.filename}</strong>
-            <small>{new Intl.DateTimeFormat(language === "tr" ? "tr-TR" : "en-US", { dateStyle: "short", timeStyle: "short" }).format(new Date(file.convertedAt))}</small>
+            <small>{yamlGeneratingFile === file.filename
+              ? (isEnglish ? "LLM is generating YAML metadata…" : "LLM YAML metadata oluşturuyor…")
+              : new Intl.DateTimeFormat(language === "tr" ? "tr-TR" : "en-US", { dateStyle: "short", timeStyle: "short" }).format(new Date(file.convertedAt))}</small>
           </button>
-          <AButton tone="secondary" aria-label={isEnglish ? `Delete ${file.filename}` : `${file.filename} sil`} onClick={() => void remove(file)}><i className="pi pi-trash" aria-hidden="true" /></AButton>
+          <div className="conversion-file-actions">
+            <AIcon className={file.hasYaml ? "conversion-yaml-status is-ready" : "conversion-yaml-status is-missing"} icon={<i className={file.hasYaml ? "pi pi-check-circle" : "pi pi-clock"} />} tooltip={file.hasYaml ? (isEnglish ? "YAML metadata added" : "YAML metadata eklendi") : (isEnglish ? "YAML metadata missing" : "YAML metadata yok")} />
+            <AButton tone="secondary" aria-label={isEnglish ? `${file.hasYaml ? "Update" : "Generate"} YAML metadata for ${file.filename}` : `${file.filename} için YAML metadata`} title={file.hasYaml ? (isEnglish ? "Update YAML metadata" : "YAML metadata güncelle") : (isEnglish ? "Generate YAML metadata" : "YAML metadata oluştur")} onClick={() => void generateYaml(file)} disabled={yamlGeneratingFile !== null}>
+              <i className={yamlGeneratingFile === file.filename ? "pi pi-spinner pi-spin" : file.hasYaml ? "pi pi-refresh" : "pi pi-sparkles"} aria-hidden="true" />
+            </AButton>
+            <AButton tone="secondary" aria-label={isEnglish ? `Delete ${file.filename}` : `${file.filename} sil`} title={isEnglish ? "Delete" : "Sil"} onClick={() => void remove(file)} disabled={yamlGeneratingFile !== null}><i className="pi pi-trash" aria-hidden="true" /></AButton>
+          </div>
         </div>)}
       </div>
       <div className="conversion-inline-preview">
@@ -150,5 +262,18 @@ export function ConversionPanel() {
         <ATextarea className="conversion-preview" readOnly value={markdown} placeholder={isEnglish ? "Converted Markdown appears here." : "Dönüştürülen Markdown burada görünür."} rows={15} />
       </div>
     </div>
+    <ADialog
+      visible={yamlPromptVisible}
+      onHide={() => !isSavingYamlPrompt && setYamlPromptVisible(false)}
+      header={isEnglish ? "YAML metadata prompt" : "YAML metadata promptu"}
+      modal
+      draggable={false}
+      style={{ width: "min(860px, calc(100vw - 32px))" }}
+      footer={<div className="button-row"><AButton type="button" tone="secondary" onClick={() => setYamlPromptVisible(false)} disabled={isSavingYamlPrompt}>{isEnglish ? "Cancel" : "Vazgeç"}</AButton><AButton type="button" onClick={() => void saveYamlPrompt()} disabled={isLoadingYamlPrompt || isSavingYamlPrompt || !yamlPrompt.trim()}>{isSavingYamlPrompt ? (isEnglish ? "Saving..." : "Kaydediliyor...") : (isEnglish ? "Save prompt" : "Promptu kaydet")}</AButton></div>}
+    >
+      <p>{isEnglish ? "This workspace's prompt is used whenever YAML metadata is generated. Keep the <system value> and <document content> placeholders so the application can provide them." : "Bu workspace'in promptu, YAML metadata oluşturulurken kullanılır. Uygulamanın değerleri ekleyebilmesi için <system value> ve <document content> yer tutucularını koruyun."}</p>
+      {yamlPromptLlmModel ? <p className="conversion-yaml-prompt-model">{isEnglish ? "Active LLM model:" : "Seçili LLM modeli:"} <strong>{yamlPromptLlmModel}</strong></p> : null}
+      <ATextarea className="conversion-yaml-prompt" value={yamlPrompt} onChange={(event) => setYamlPrompt(event.target.value)} disabled={isLoadingYamlPrompt || isSavingYamlPrompt} aria-label={isEnglish ? "YAML metadata prompt" : "YAML metadata promptu"} rows={24} />
+    </ADialog>
   </section>;
 }
