@@ -66,15 +66,21 @@ const extractionJsonSchema = {
 export class OpenAIProvider implements LLMProvider {
   constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
-  async generate(prompt: string, signal?: AbortSignal): Promise<string> {
+  async generate(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): Promise<string> {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({ model: this.model, input: prompt, temperature: this.temperature }), signal
+      // Reasoning models such as GPT-5 reject temperature. Omit it here so one
+      // provider implementation works across the configured OpenAI models.
+      body: JSON.stringify({ model: this.model, input: prompt, ...(options?.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}) }), signal
     });
     if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}: ${await response.text()}`);
     const body = await response.json() as OpenAIResponseBody;
     return getOutputText(body);
+  }
+
+  async *generateStream(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): AsyncIterable<string> {
+    yield await this.generate(prompt, signal, options);
   }
 
   async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
@@ -84,7 +90,6 @@ export class OpenAIProvider implements LLMProvider {
       body: JSON.stringify({
         model: this.model,
         input: prompt,
-        temperature: this.temperature,
         max_output_tokens: 4096,
         text: {
           format: {
@@ -110,6 +115,36 @@ export class OpenAIProvider implements LLMProvider {
 
     return JSON.parse(outputText) as T;
   }
+
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        model: this.model,
+        input: prompt,
+        max_output_tokens: 4096,
+        text: {
+          format: {
+            type: "json_schema",
+            name: "metadata",
+            strict: false,
+            schema: { type: "object", additionalProperties: true }
+          }
+        }
+      }),
+      signal
+    });
+
+    if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}: ${await response.text()}`);
+    const body = await response.json() as OpenAIResponseBody;
+    const outputText = getOutputText(body);
+    if (!outputText) {
+      const reason = body.incomplete_details?.reason ?? body.status ?? "empty output";
+      throw new Error(`OpenAI did not return a complete JSON response (${reason}).`);
+    }
+    return JSON.parse(outputText) as T;
+  }
 }
 
 function getOutputText(body: OpenAIResponseBody) {
@@ -131,7 +166,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     const response = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({ model: this.model, input: text })
+      // text-embedding-3 models support dimension reduction.  Normalizing to
+      // 1024 lets this provider share the database index with Ollama and Gemini.
+      body: JSON.stringify({ model: this.model, input: text, dimensions: 1024 })
     });
     if (!response.ok) {
       throw new Error(`OpenAI embedding failed with ${response.status}: ${await response.text()}`);

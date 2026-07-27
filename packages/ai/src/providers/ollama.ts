@@ -2,6 +2,7 @@ import type { EmbeddingProvider, LLMProvider } from "../index.js";
 
 type OllamaGenerateResponse = {
   response?: string;
+  error?: string;
 };
 
 type OllamaEmbeddingResponse = {
@@ -17,16 +18,39 @@ export class OllamaProvider implements LLMProvider {
     private readonly temperature: number
   ) {}
 
-  async generate(prompt: string, signal?: AbortSignal): Promise<string> {
-    return this.request(prompt, signal);
+  async generate(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): Promise<string> {
+    let output = "";
+    for await (const chunk of this.generateStream(prompt, signal, options)) output += chunk;
+    return output;
+  }
+
+  async *generateStream(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): AsyncIterable<string> {
+    const response = await this.request(prompt, signal, undefined, options?.maxOutputTokens ?? 1024);
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Ollama returned an empty response stream.");
+    const decoder = new TextDecoder();
+    let pending = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      pending += decoder.decode(value, { stream: !done });
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) yield parseGeneratedChunk(line);
+      if (done) break;
+    }
+    if (pending.trim()) yield parseGeneratedChunk(pending);
   }
 
   async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    const text = await this.request(prompt, signal, "json");
+    const text = await readGeneratedText(await this.request(prompt, signal, "json"));
     return JSON.parse(extractJson(text)) as T;
   }
 
-  private async request(prompt: string, signal?: AbortSignal, format?: "json"): Promise<string> {
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+    return this.generateJson<T>(prompt, signal);
+  }
+
+  private async request(prompt: string, signal?: AbortSignal, format?: "json", maxTokens?: number): Promise<Response> {
     const controller = new AbortController();
     const timeout = this.timeoutMs > 0 ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
     const abort = () => controller.abort();
@@ -41,13 +65,16 @@ export class OllamaProvider implements LLMProvider {
       body: JSON.stringify({
         model: this.model,
         prompt,
-        stream: false,
+        // Streaming makes Ollama send response headers immediately. With stream: false,
+        // Node's built-in five-minute header timeout can terminate long generations.
+        stream: true,
         ...(format ? { format } : {}),
         // Qwen 3 can spend a long time producing an internal reasoning trace.
         // Extraction needs structured facts, not a chain of thought.
         think: false,
         options: {
-          temperature: this.temperature
+          temperature: this.temperature,
+          ...(maxTokens ? { num_predict: maxTokens } : {})
         }
       })
     }).finally(() => {
@@ -58,11 +85,11 @@ export class OllamaProvider implements LLMProvider {
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama generate failed with ${response.status}`);
+      const detail = (await response.text()).replace(/\s+/g, " ").trim();
+      throw new Error(`Ollama generate failed with ${response.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`);
     }
 
-    const body = (await response.json()) as OllamaGenerateResponse;
-    return body.response ?? "";
+    return response;
   }
 }
 
@@ -83,7 +110,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
   private async embedWithEmbeddingsEndpoint(text: string): Promise<number[]> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = this.timeoutMs > 0 ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
 
     const response = await fetch(`${this.baseUrl}/api/embeddings`, {
       method: "POST",
@@ -95,7 +122,9 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         model: this.model,
         prompt: text
       })
-    }).finally(() => clearTimeout(timeout));
+    }).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
 
     if (!response.ok) {
       throw new Error(`Ollama embedding failed with ${response.status}`);
@@ -113,7 +142,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
   private async embedWithEmbedEndpoint(text: string): Promise<number[]> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = this.timeoutMs > 0 ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
 
     const response = await fetch(`${this.baseUrl}/api/embed`, {
       method: "POST",
@@ -125,7 +154,9 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         model: this.model,
         input: text
       })
-    }).finally(() => clearTimeout(timeout));
+    }).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
 
     if (!response.ok) {
       throw new Error(`Ollama embed failed with ${response.status}`);
@@ -167,4 +198,26 @@ function extractJson(text: string) {
   }
 
   return text.trim();
+}
+
+async function readGeneratedText(response: Response) {
+  const body = await response.text();
+  const lines = body.trim().split(/\r?\n/).filter(Boolean);
+
+  try {
+    const chunks = lines.map((line) => JSON.parse(line) as OllamaGenerateResponse);
+    const error = chunks.find((chunk) => chunk.error)?.error;
+    if (error) throw new Error(`Ollama generate failed: ${error}`);
+    return chunks.map((chunk) => chunk.response ?? "").join("");
+  } catch (error) {
+    if (error instanceof SyntaxError) return body;
+    throw error;
+  }
+}
+
+function parseGeneratedChunk(line: string) {
+  if (!line.trim()) return "";
+  const chunk = JSON.parse(line) as OllamaGenerateResponse;
+  if (chunk.error) throw new Error(`Ollama generate failed: ${chunk.error}`);
+  return chunk.response ?? "";
 }

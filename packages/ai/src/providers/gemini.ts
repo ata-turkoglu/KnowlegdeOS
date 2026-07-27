@@ -5,19 +5,27 @@ const baseUrl = "https://generativelanguage.googleapis.com/v1beta/models";
 export class GeminiProvider implements LLMProvider {
   constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
-  async generate(prompt: string, signal?: AbortSignal): Promise<string> {
-    return this.request(prompt, signal);
+  async generate(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): Promise<string> {
+    return this.request(prompt, signal, undefined, options?.maxOutputTokens);
+  }
+
+  async *generateStream(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): AsyncIterable<string> {
+    yield await this.generate(prompt, signal, options);
   }
 
   async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
     return JSON.parse(await this.request(prompt, signal, "application/json")) as T;
   }
 
-  private async request(prompt: string, signal?: AbortSignal, responseMimeType?: "application/json"): Promise<string> {
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+    return this.generateJson<T>(prompt, signal);
+  }
+
+  private async request(prompt: string, signal?: AbortSignal, responseMimeType?: "application/json", maxOutputTokens?: number): Promise<string> {
     const response = await fetch(`${baseUrl}/${this.model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { ...(responseMimeType ? { responseMimeType } : {}), temperature: this.temperature } }), signal
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { ...(responseMimeType ? { responseMimeType } : {}), ...(maxOutputTokens ? { maxOutputTokens } : {}), temperature: this.temperature } }), signal
     });
     if (!response.ok) throw new Error(`Gemini response failed with ${response.status}`);
     const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
@@ -32,7 +40,9 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
     const response = await fetch(`${baseUrl}/${this.model}:embedContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: 768 })
+      // Keep every supported embedding provider compatible with the shared
+      // pgvector(1024) column and its HNSW index.
+      body: JSON.stringify({ content: { parts: [{ text }] }, outputDimensionality: 1024 })
     });
     if (!response.ok) {
       throw new Error(`Gemini embedding failed with ${response.status}: ${await response.text()}`);
