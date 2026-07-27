@@ -1,16 +1,24 @@
-import type { EmbeddingProvider, LLMProvider } from "../index.js";
+import { flattenGenerationInput, isStructuredGenerationInput, type EmbeddingProvider, type GenerationInput, type GenerationOptions, type LLMProvider } from "../index.js";
 
 const baseUrl = "https://generativelanguage.googleapis.com/v1beta/models";
 
 export class GeminiProvider implements LLMProvider {
   constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
-  async generate(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): Promise<string> {
-    return this.request(prompt, signal, undefined, options?.maxOutputTokens);
+  async generate(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): Promise<string> {
+    const text = await this.request(flattenGenerationInput(input), signal, undefined, options?.maxOutputTokens);
+    try {
+      options?.onMetadata?.({
+        provider: "gemini",
+        model: this.model,
+        cacheStatus: isStructuredGenerationInput(input) && input.cache?.mode === "auto" ? "UNSUPPORTED" : "DISABLED"
+      });
+    } catch { /* Telemetry must never fail generation. */ }
+    return text;
   }
 
-  async *generateStream(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): AsyncIterable<string> {
-    yield await this.generate(prompt, signal, options);
+  async *generateStream(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): AsyncIterable<string> {
+    yield await this.generate(input, signal, options);
   }
 
   async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {

@@ -7,7 +7,12 @@
     "dev": "corepack pnpm --parallel --filter @knowledgeos/api --filter @knowledgeos/web dev",
     "build": "corepack pnpm -r build",
     "typecheck": "corepack pnpm -r typecheck",
-    "lint": "corepack pnpm -r lint"
+    "lint": "corepack pnpm -r lint",
+    "test": "corepack pnpm test:unit && corepack pnpm test:integration && corepack pnpm test:rag",
+    "test:unit": "corepack pnpm --filter @knowledgeos/api exec tsx --test test/unit/*.test.ts",
+    "test:integration": "corepack pnpm --filter @knowledgeos/api exec tsx --test test/integration/*.test.ts",
+    "test:rag": "corepack pnpm --filter @knowledgeos/api exec tsx --test test/rag/*.test.ts",
+    "verify": "corepack pnpm typecheck && corepack pnpm build && corepack pnpm test"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

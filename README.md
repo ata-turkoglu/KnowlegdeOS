@@ -23,6 +23,9 @@ corepack pnpm dev
 
 Copy `.env.example` to `.env` before running services that need configuration.
 
+Provider prompt caching, its privacy boundary, observability, and configuration are
+documented in [docs/provider-context-caching.md](docs/provider-context-caching.md).
+
 ## Docker
 
 Docker Compose starts PostgreSQL with pgvector, runs database migrations, pulls

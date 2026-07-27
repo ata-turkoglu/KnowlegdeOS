@@ -1,4 +1,4 @@
-import { GeminiEmbeddingProvider, GeminiProvider, OllamaEmbeddingProvider, OllamaProvider, OpenAIEmbeddingProvider, OpenAIProvider, type EmbeddingProvider, type LLMProvider } from "@knowledgeos/ai";
+import { AnthropicProvider, GeminiEmbeddingProvider, GeminiProvider, OllamaEmbeddingProvider, OllamaProvider, OpenAIEmbeddingProvider, OpenAIProvider, type EmbeddingProvider, type LLMProvider } from "@knowledgeos/ai";
 import type { ApiConfig, LlmTemperatureProfile } from "../config/env.js";
 
 function requireKey(key: string, provider: string) { if (!key) throw new Error(`${provider} API key is not configured.`); return key; }
@@ -6,7 +6,8 @@ export function getLlmProvider(config: ApiConfig, profile?: LlmTemperatureProfil
   const temperature = profile ? config.llmTemperatures[profile] : config.llmTemperature;
   if (config.llmProvider === "openai") return new OpenAIProvider(requireKey(config.openaiApiKey, "OpenAI"), config.openaiLlmModel, temperature);
   if (config.llmProvider === "gemini") return new GeminiProvider(requireKey(config.geminiApiKey, "Gemini"), config.geminiLlmModel, temperature);
-  return new OllamaProvider(config.ollamaBaseUrl, config.ollamaLlmModel, config.ollamaLlmTimeoutMs, temperature);
+  if (config.llmProvider === "anthropic") return new AnthropicProvider(requireKey(config.anthropicApiKey, "Anthropic"), config.anthropicLlmModel, temperature, config.anthropicBaseUrl);
+  return new OllamaProvider(config.ollamaBaseUrl, config.ollamaLlmModel, config.ollamaLlmTimeoutMs, temperature, config.ollamaKeepAlive);
 }
 export function getEmbeddingProvider(config: ApiConfig): EmbeddingProvider {
   if (config.embeddingProvider === "openai") return new OpenAIEmbeddingProvider(requireKey(config.openaiApiKey, "OpenAI"), config.openaiEmbeddingModel);

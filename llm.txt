@@ -1,0 +1,20 @@
+🛠️ Ne Zaman OLLAMA (Yerel Modeller) Kullanılmalı?
+Yerel modeller; hız, düşük maliyet, veri gizliliği ve yapılandırılmış ara adımlar için biçilmiş kaftandır.
+Veri Gizliliği ve Güvenlik Duvarı (KVKK / GDPR): Kullanıcı veritabanından çekilen ham müşteri bilgileri, finansal raporlar veya kişisel veriler (PII) üzerinde işlem yapılacağı zaman. Veri sunucudan dışarı çıkmamalıdır.
+Sınıflandırma ve Yönlendirme (Router/Orkestratör): Kullanıcı sorusunu analiz etme, niyet (intent) belirleme, metadata çıkarma veya hangi ajanın çalışacağına karar verme adımlarında. Bu işler için API harcamak gereksiz maliyettir.
+Girdi (Input) Optimizasyonu: Kullanıcının uzun ve dağınık sorusunu, arama motorunun (PostgreSQL pgvector) anlayacağı temiz anahtar kelimelere veya arama vektörlerine dönüştürürken.
+Kod Üretimi ve Ajan Sandboxları: Veritabanından veri çekmek için lokalde SQL sorgusu üretilmesi veya izole bir Python ortamında (sandbox) matematiksel hesaplama yapılması gerektiğinde (Örn: Qwen-Coder veya CodeLlama).
+Yüksek Trafikli / Basit İstekler: Sistemdeki "Merhaba", "Teşekkürler", "Bunu listele" gibi derin muhakeme gerektirmeyen, şablon yanıtlı veya kısa mesajlaşma süreçlerinde.
+
+🌐 Ne Zaman API (Örn: OpenAI, Claude, Gemini) Kullanılmalı?Ticari API'ler; yüksek muhakeme (reasoning), karmaşık sentez ve yaratıcı/kurumsal dil kalitesi gereken nihai adımlarda kullanılmalıdır.
+Sentez ve Nihai Yanıt Üretimi (Executive Agent): Farklı dökümanlardan, SQL çıktılarından ve tablolardan gelen dağınık bilgileri birleştirip, bir insan uzman elinden çıkmış gibi akıcı, çelişkisiz ve kurumsal tonda tek bir rapor haline getirirken.
+Karmaşık Muhakeme (Complex Reasoning): Sorunun cevabı doğrudan dökümanda yazmıyorsa; dökümandaki 3 farklı bilgiyi mantıksal olarak birbirine bağlayıp bir çıkarım (inference) yapılması gerekiyorsa.
+Büyük Bağlam (Large Context Window) Yönetimi: Kullanıcının çok uzun bir döküman setini yükleyip "Tüm bu dökümanları özetle" dediği ve context bütçesinin yerel modellerin kapasitesini (Örn: 8k-32k token) aştığı durumlarda.
+Çok Dilli (Multilingual) ve Kültürel Hassasiyet: Yanıtın farklı dillerde, profesyonel diplomatik/ticari bir üslupla veya belirli bir formata (Örn: resmi e-posta, hukuki sözleşme taslağı) tam uyumlu yazılması gerektiğinde.
+Gelişmiş Guardrails ve Düzeltme Döngüsü: Mimarideki kırmızı kutuda yer alan "Bir Kez Düzeltme Üretimi" adımında. Eğer ilk yanıt hatalıysa, hatayı anlayıp kendi kendini düzeltebilecek yüksek zekaya sahip bir API modeli tercih edilmelidir.
+
+
+Mimarideki Akış Özeti (Örnek Senaryo)Sisteme "Geçen ayki ciro dökümünü getir ve bunu rakibimiz X firmasının halka açık verileriyle kıyaslayıp yönetim kuruluna sunulacak bir özet yaz" sorusu geldiğinde hibrit dağılım şöyle olur:
+Ollama: Soruyu analiz eder (Orkestratör), şirket içi SQL veritabanından geçen ayki ciroyu çeker (Data Agent). -> (Veri güvenliği sağlandı, maliyet $0)
+Ollama: İnternette veya bilgi tabanında rakip X firmasının verilerini aratır (Retrieval Agent). -> (Hızlı arama, maliyet $0)
+Ticari API: Şirket içi ciro verisi ile rakip verisini alır, karmaşık pazar analizi muhakemesini yapar ve yönetim kuruluna sunulacak vizyoner metni yazar. -> (Yüksek zeka, kaliteli çıktı)

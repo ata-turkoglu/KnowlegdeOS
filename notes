@@ -1,0 +1,5 @@
+Engelledim.
+Artık YAML üretiminde:
+Model yanıtı � veya görünmez kontrol karakterleri içerirse metaveri yazılmıyor.
+Sistem aynı isteği, sıkı Unicode kuralıyla bir kez otomatik yeniden üretiyor.
+İkinci yanıt da bozuksa 422 hata dönüyor ve mevcut .md dosyası değişmeden kalıyor.

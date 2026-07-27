@@ -1,4 +1,4 @@
-import type { EmbeddingProvider, LLMProvider } from "../index.js";
+import { flattenGenerationInput, isStructuredGenerationInput, type EmbeddingProvider, type GenerationInput, type GenerationOptions, type LLMProvider } from "../index.js";
 
 type OllamaGenerateResponse = {
   response?: string;
@@ -15,17 +15,18 @@ export class OllamaProvider implements LLMProvider {
     private readonly baseUrl: string,
     private readonly model: string,
     private readonly timeoutMs: number,
-    private readonly temperature: number
+    private readonly temperature: number,
+    private readonly keepAlive: string | number | null = "5m"
   ) {}
 
-  async generate(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): Promise<string> {
+  async generate(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): Promise<string> {
     let output = "";
-    for await (const chunk of this.generateStream(prompt, signal, options)) output += chunk;
+    for await (const chunk of this.generateStream(input, signal, options)) output += chunk;
     return output;
   }
 
-  async *generateStream(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): AsyncIterable<string> {
-    const response = await this.request(prompt, signal, undefined, options?.maxOutputTokens ?? 1024);
+  async *generateStream(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): AsyncIterable<string> {
+    const response = await this.request(flattenGenerationInput(input), signal, undefined, options?.maxOutputTokens ?? 1024);
     const reader = response.body?.getReader();
     if (!reader) throw new Error("Ollama returned an empty response stream.");
     const decoder = new TextDecoder();
@@ -39,6 +40,13 @@ export class OllamaProvider implements LLMProvider {
       if (done) break;
     }
     if (pending.trim()) yield parseGeneratedChunk(pending);
+    try {
+      options?.onMetadata?.({
+        provider: "ollama",
+        model: this.model,
+        cacheStatus: isStructuredGenerationInput(input) && input.cache?.mode === "auto" ? "UNSUPPORTED" : "DISABLED"
+      });
+    } catch { /* Telemetry must never fail generation. */ }
   }
 
   async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
@@ -51,20 +59,18 @@ export class OllamaProvider implements LLMProvider {
   }
 
   private async request(prompt: string, signal?: AbortSignal, format?: "json", maxTokens?: number): Promise<Response> {
-    const controller = new AbortController();
-    const timeout = this.timeoutMs > 0 ? setTimeout(() => controller.abort(), this.timeoutMs) : undefined;
-    const abort = () => controller.abort();
-    signal?.addEventListener("abort", abort, { once: true });
-
     const response = await fetch(`${this.baseUrl}/api/generate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      signal: controller.signal,
+      // Local LLM generation intentionally has no wall-clock timeout. The
+      // caller's signal still cancels a disconnected or explicitly aborted request.
+      signal,
       body: JSON.stringify({
         model: this.model,
         prompt,
+        ...(this.keepAlive === null ? {} : { keep_alive: this.keepAlive }),
         // Streaming makes Ollama send response headers immediately. With stream: false,
         // Node's built-in five-minute header timeout can terminate long generations.
         stream: true,
@@ -77,11 +83,6 @@ export class OllamaProvider implements LLMProvider {
           ...(maxTokens ? { num_predict: maxTokens } : {})
         }
       })
-    }).finally(() => {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-      signal?.removeEventListener("abort", abort);
     });
 
     if (!response.ok) {

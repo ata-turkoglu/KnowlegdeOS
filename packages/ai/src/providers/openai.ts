@@ -1,4 +1,12 @@
-import type { EmbeddingProvider, LLMProvider } from "../index.js";
+import {
+  flattenGenerationInput,
+  isStructuredGenerationInput,
+  type EmbeddingProvider,
+  type GenerationInput,
+  type GenerationMetadata,
+  type GenerationOptions,
+  type LLMProvider
+} from "../index.js";
 
 type OpenAIResponseBody = {
   output_text?: string;
@@ -10,6 +18,14 @@ type OpenAIResponseBody = {
   }>;
   status?: string;
   incomplete_details?: { reason?: string };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    input_tokens_details?: {
+      cached_tokens?: number;
+      cache_write_tokens?: number;
+    };
+  };
 };
 
 const extractionJsonSchema = {
@@ -66,21 +82,30 @@ const extractionJsonSchema = {
 export class OpenAIProvider implements LLMProvider {
   constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
-  async generate(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): Promise<string> {
+  async generate(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): Promise<string> {
+    const cacheEnabled = isStructuredGenerationInput(input) && input.cache?.mode === "auto" && Boolean(input.stablePrefix);
+    const prompt = flattenGenerationInput(input);
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
       // Reasoning models such as GPT-5 reject temperature. Omit it here so one
       // provider implementation works across the configured OpenAI models.
-      body: JSON.stringify({ model: this.model, input: prompt, ...(options?.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}) }), signal
+      body: JSON.stringify({
+        model: this.model,
+        input: prompt,
+        ...(cacheEnabled && input.cache?.namespace ? { prompt_cache_key: input.cache.namespace } : {}),
+        ...(options?.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {})
+      }),
+      signal
     });
     if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}: ${await response.text()}`);
     const body = await response.json() as OpenAIResponseBody;
+    safelyReport(options, openAiMetadata(this.model, body, cacheEnabled));
     return getOutputText(body);
   }
 
-  async *generateStream(prompt: string, signal?: AbortSignal, options?: { maxOutputTokens?: number }): AsyncIterable<string> {
-    yield await this.generate(prompt, signal, options);
+  async *generateStream(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): AsyncIterable<string> {
+    yield await this.generate(input, signal, options);
   }
 
   async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
@@ -145,6 +170,36 @@ export class OpenAIProvider implements LLMProvider {
     }
     return JSON.parse(outputText) as T;
   }
+}
+
+function openAiMetadata(model: string, body: OpenAIResponseBody, cacheEnabled: boolean): GenerationMetadata {
+  const details = body.usage?.input_tokens_details;
+  const cached = details?.cached_tokens;
+  const created = details?.cache_write_tokens;
+  const cacheStatus = !cacheEnabled
+    ? "DISABLED"
+    : typeof cached !== "number" && typeof created !== "number"
+      ? "UNKNOWN"
+      : cached && cached > 0
+        ? "HIT"
+        : created && created > 0
+          ? "CREATED"
+          : "MISS";
+  return {
+    provider: "openai",
+    model,
+    cacheStatus,
+    usage: body.usage ? {
+      inputTokens: body.usage.input_tokens,
+      outputTokens: body.usage.output_tokens,
+      cachedInputTokens: cached,
+      cacheCreationInputTokens: created
+    } : undefined
+  };
+}
+
+function safelyReport(options: GenerationOptions | undefined, metadata: GenerationMetadata) {
+  try { options?.onMetadata?.(metadata); } catch { /* Telemetry must never fail generation. */ }
 }
 
 function getOutputText(body: OpenAIResponseBody) {
