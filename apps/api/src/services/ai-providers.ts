@@ -11,6 +11,6 @@ export function getLlmProvider(config: ApiConfig, profile?: LlmTemperatureProfil
 export function getEmbeddingProvider(config: ApiConfig): EmbeddingProvider {
   if (config.embeddingProvider === "openai") return new OpenAIEmbeddingProvider(requireKey(config.openaiApiKey, "OpenAI"), config.openaiEmbeddingModel);
   if (config.embeddingProvider === "gemini") return new GeminiEmbeddingProvider(requireKey(config.geminiApiKey, "Gemini"), config.geminiEmbeddingModel);
-  return new OllamaEmbeddingProvider(config.ollamaBaseUrl, config.ollamaEmbeddingModel);
+  return new OllamaEmbeddingProvider(config.ollamaBaseUrl, config.ollamaEmbeddingModel, config.ollamaEmbeddingTimeoutMs);
 }
 export function selectedEmbeddingModel(config: ApiConfig) { return config.embeddingProvider === "openai" ? `openai/${config.openaiEmbeddingModel}` : config.embeddingProvider === "gemini" ? `gemini/${config.geminiEmbeddingModel}` : `ollama/${config.ollamaEmbeddingModel}`; }

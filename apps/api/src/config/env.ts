@@ -22,6 +22,7 @@ export type ApiConfig = {
   ollamaBaseUrl: string;
   ollamaLlmModel: string;
   ollamaLlmTimeoutMs: number;
+  ollamaEmbeddingTimeoutMs: number;
   llmTemperature: number;
   llmTemperatures: LlmTemperatures;
   ollamaEmbeddingModel: string;
@@ -48,6 +49,8 @@ export function loadConfig(): ApiConfig {
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
     ollamaLlmModel: process.env.OLLAMA_LLM_MODEL ?? "qwen3:8b",
     ollamaLlmTimeoutMs: Number(process.env.OLLAMA_LLM_TIMEOUT_MS ?? 0),
+    // 0 disables the timeout. A cold local model can legitimately take a long time to load.
+    ollamaEmbeddingTimeoutMs: Number(process.env.OLLAMA_EMBEDDING_TIMEOUT_MS ?? 0),
     llmTemperature: temperature(process.env.LLM_TEMPERATURE, 0.2),
     llmTemperatures: {
       extraction: temperature(process.env.LLM_TEMPERATURE_EXTRACTION, 0.1),

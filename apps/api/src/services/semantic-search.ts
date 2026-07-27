@@ -1,293 +1,103 @@
-import { readFile, readdir, unlink, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { and, count, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { createDatabaseClient, documentChunks, documents, workspaces } from "@knowledgeos/database";
 import type { ApiConfig } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
-import { ensureWorkspaceStorage, getWorkspaceStoragePaths } from "./storage.js";
-import { writeFileAtomically } from "./storage.js";
-import type { IndexedDocumentMetadata } from "./documents.js";
 import { getEmbeddingProvider, selectedEmbeddingModel } from "./ai-providers.js";
 import { getWorkspaceIngestionSettings } from "./workspace-settings.js";
 
-export type SemanticIndexChunk = {
-  id: string;
-  workspaceSlug: string;
-  documentName: string;
-  title: string;
-  chunkIndex: number;
-  heading: string | null;
-  content: string;
-  embedding: number[];
-};
+export type SemanticSearchResult = { queryType: "SEMANTIC_SEARCH"; query: string; embeddingModel: string; results: Array<{ documentName: string; title: string; chunkIndex: number; heading: string | null; score: number; snippet: string }>; sources: Array<{ documentName: string; title: string; evidenceSnippet: string; score: number }> };
+export type SemanticContextChunk = { documentName: string; title: string; chunkIndex: number; heading: string | null; content: string };
+export type EmbeddingCoverageItem = { documentName: string; title: string; chunkCount: number; embeddedChunkCount: number; status: "MISSING" | "READY" };
 
-export type SemanticIndex = {
-  version: 1;
-  workspaceSlug: string;
-  embeddingModel: string;
-  updatedAt: string;
-  chunks: SemanticIndexChunk[];
-};
+async function withDb<T>(config: ApiConfig, fn: (client: ReturnType<typeof createDatabaseClient>) => Promise<T>) {
+  const client = createDatabaseClient(config.databaseUrl); try { return await fn(client); } finally { await client.close(); }
+}
+async function workspaceId(db: ReturnType<typeof createDatabaseClient>["db"], slug: string) {
+  const [workspace] = await db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.slug, slug)).limit(1);
+  if (!workspace) throw new Error(`Workspace '${slug}' was not found.`);
+  return workspace.id;
+}
+const documentName = (filename: string) => slugify(filename.replace(/\.[^.]+$/, ""));
+const vectorLiteral = (values: number[]) => `[${values.join(",")}]`;
+const embeddingDimensions = 1024;
 
-export type SemanticSearchResult = {
-  queryType: "SEMANTIC_SEARCH";
-  query: string;
-  embeddingModel: string;
-  results: Array<{
-    documentName: string;
-    title: string;
-    chunkIndex: number;
-    heading: string | null;
-    score: number;
-    snippet: string;
-  }>;
-  sources: Array<{
-    documentName: string;
-    title: string;
-    evidenceSnippet: string;
-    score: number;
-  }>;
-};
-
-export type SemanticContextChunk = {
-  documentName: string;
-  title: string;
-  chunkIndex: number;
-  heading: string | null;
-  content: string;
-};
-
-export type EmbeddingCoverageItem = {
-  documentName: string;
-  title: string;
-  chunkCount: number;
-  embeddedChunkCount: number;
-  status: "MISSING" | "READY";
-};
-
-async function readStoredSemanticIndex(config: ApiConfig, workspaceSlug: string): Promise<SemanticIndex | null> {
-  const paths = getWorkspaceStoragePaths(config.storageRoot, workspaceSlug);
-  try {
-    const index = JSON.parse(await readFile(path.join(paths.metadata, "embeddings.json"), "utf8")) as SemanticIndex;
-    return index.embeddingModel === selectedEmbeddingModel(config) ? index : null;
-  } catch { return null; }
+function assertEmbeddingDimensions(embedding: number[]) {
+  if (embedding.length !== embeddingDimensions) {
+    throw new Error(`The selected embedding model returned ${embedding.length} dimensions; this installation requires ${embeddingDimensions}. Choose a compatible model or configure it to return ${embeddingDimensions} dimensions.`);
+  }
 }
 
 export async function getEmbeddingCoverage(config: ApiConfig, workspaceSlugInput: string): Promise<EmbeddingCoverageItem[]> {
-  const workspaceSlug = slugify(workspaceSlugInput);
-  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
-  const index = await readStoredSemanticIndex(config, workspaceSlug);
-  const embeddedByDocument = new Map<string, number>();
-  for (const chunk of index?.chunks ?? []) embeddedByDocument.set(chunk.documentName, (embeddedByDocument.get(chunk.documentName) ?? 0) + 1);
-  const files = await readdir(paths.metadata);
-  const coverage: EmbeddingCoverageItem[] = [];
-  for (const fileName of files) {
-    if (!fileName.endsWith(".json") || ["workspace.json", "entities.json", "embeddings.json", "operations.json"].includes(fileName)) continue;
-    const metadata = JSON.parse(await readFile(path.join(paths.metadata, fileName), "utf8")) as Partial<IndexedDocumentMetadata>;
-    if (metadata.status !== "INDEXED" || !metadata.ingestion) continue;
-    const documentName = path.parse(fileName).name;
-    const chunkCount = metadata.ingestion.chunks.length;
-    const embeddedChunkCount = embeddedByDocument.get(documentName) ?? 0;
-    coverage.push({ documentName, title: metadata.title ?? documentName, chunkCount, embeddedChunkCount, status: embeddedChunkCount === chunkCount && chunkCount > 0 ? "READY" : "MISSING" });
-  }
-  return coverage.sort((left, right) => left.documentName.localeCompare(right.documentName, "tr"));
-}
-
-export async function embedSelectedDocuments(
-  config: ApiConfig,
-  workspaceSlugInput: string,
-  documentNames: string[],
-  onProgress?: (progress: { completed: number; total: number; documentName: string }) => void,
-  signal?: AbortSignal
-) {
-  const workspaceSlug = slugify(workspaceSlugInput);
-  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
-  const provider = getEmbeddingProvider(config);
-  const existing = await readStoredSemanticIndex(config, workspaceSlug);
-  const selected = new Set(documentNames.map(slugify));
-  const chunks = (existing?.chunks ?? []).filter((chunk) => !selected.has(chunk.documentName));
-  const files = await readdir(paths.metadata);
-  const selectedFiles = files.filter((fileName) => selected.has(path.parse(fileName).name));
-  let completed = 0;
-  for (const fileName of selectedFiles) {
-    if (signal?.aborted) throw new Error("Embedding cancelled.");
-    const metadata = JSON.parse(await readFile(path.join(paths.metadata, fileName), "utf8")) as Partial<IndexedDocumentMetadata>;
-    const documentName = path.parse(fileName).name;
-    onProgress?.({ completed, total: selectedFiles.length, documentName });
-    if (metadata.status === "INDEXED" && metadata.ingestion) {
-      for (const chunk of metadata.ingestion.chunks) {
-        if (signal?.aborted) throw new Error("Embedding cancelled.");
-        chunks.push({ id: `${documentName}:${chunk.chunkIndex}`, workspaceSlug, documentName, title: metadata.title ?? documentName, chunkIndex: chunk.chunkIndex, heading: chunk.heading, content: chunk.content, embedding: await provider.embed(chunk.content) });
-      }
-    }
-    completed += 1;
-    onProgress?.({ completed, total: selectedFiles.length, documentName });
-  }
-  await writeSemanticIndex(config, { version: 1, workspaceSlug, embeddingModel: selectedEmbeddingModel(config), updatedAt: new Date().toISOString(), chunks });
-  return { workspaceSlug, embeddedDocumentCount: completed };
-}
-
-export async function rebuildSemanticIndex(
-  config: ApiConfig,
-  workspaceSlugInput: string
-) {
-  const workspaceSlug = slugify(workspaceSlugInput);
-  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
-  const metadataFiles = await readdir(paths.metadata);
-  const provider = getEmbeddingProvider(config);
-  const chunks: SemanticIndexChunk[] = [];
-
-  for (const fileName of metadataFiles) {
-    if (!fileName.endsWith(".json") || fileName === "workspace.json" || fileName === "entities.json" || fileName === "embeddings.json") {
-      continue;
-    }
-
-    const filePath = path.join(paths.metadata, fileName);
-    const metadata = JSON.parse(await readFile(filePath, "utf8")) as Partial<IndexedDocumentMetadata>;
-
-    if (metadata.status !== "INDEXED" || !metadata.ingestion) {
-      continue;
-    }
-
-    const documentName = path.parse(fileName).name;
-
-    for (const chunk of metadata.ingestion.chunks) {
-      const embedding = await provider.embed(chunk.content);
-      chunks.push({
-        id: `${documentName}:${chunk.chunkIndex}`,
-        workspaceSlug,
-        documentName,
-        title: metadata.title ?? documentName,
-        chunkIndex: chunk.chunkIndex,
-        heading: chunk.heading,
-        content: chunk.content,
-        embedding
-      });
-    }
-  }
-
-  const index: SemanticIndex = {
-    version: 1,
-    workspaceSlug,
-    embeddingModel: selectedEmbeddingModel(config),
-    updatedAt: new Date().toISOString(),
-    chunks
-  };
-
-  await writeSemanticIndex(config, index);
-  return index;
-}
-
-export async function searchSemanticDocuments(
-  config: ApiConfig,
-  input: {
-    workspaceSlug: string;
-    query: string;
-    limit?: number;
-  }
-): Promise<SemanticSearchResult> {
-  const workspaceSlug = slugify(input.workspaceSlug);
-  const settings = await getWorkspaceIngestionSettings(config, workspaceSlug);
-  let index = await readSemanticIndex(config, workspaceSlug);
-  const provider = getEmbeddingProvider(config);
-  const queryEmbedding = await provider.embed(input.query);
-
-  if (index.chunks.some((chunk) => chunk.embedding.length !== queryEmbedding.length)) {
-    index = await rebuildSemanticIndex(config, workspaceSlug);
-  }
-
-  const results = index.chunks
-    .map((chunk) => ({
-      documentName: chunk.documentName,
-      title: chunk.title,
-      chunkIndex: chunk.chunkIndex,
-      heading: chunk.heading,
-      score: cosineSimilarity(queryEmbedding, chunk.embedding),
-      snippet: chunk.content.slice(0, 500)
-    }))
-    .sort((left, right) => right.score - left.score)
-    .filter((result) => result.score >= settings.similarityThreshold)
-    .slice(0, input.limit ?? settings.semanticTopK);
-
-  return {
-    queryType: "SEMANTIC_SEARCH",
-    query: input.query,
-    embeddingModel: index.embeddingModel,
-    results,
-    sources: results.map((result) => ({
-      documentName: result.documentName,
-      title: result.title,
-      evidenceSnippet: result.snippet,
-      score: result.score
-    }))
-  };
-}
-
-export async function getSemanticContext(
-  config: ApiConfig,
-  workspaceSlugInput: string,
-  results: SemanticSearchResult["results"]
-): Promise<SemanticContextChunk[]> {
-  const index = await readSemanticIndex(config, slugify(workspaceSlugInput));
-  const chunksById = new Map(index.chunks.map((chunk) => [chunk.id, chunk]));
-
-  return results.flatMap((result) => {
-    const chunk = chunksById.get(`${result.documentName}:${result.chunkIndex}`);
-    return chunk ? [{
-      documentName: chunk.documentName,
-      title: chunk.title,
-      chunkIndex: chunk.chunkIndex,
-      heading: chunk.heading,
-      content: chunk.content
-    }] : [];
+  const slug = slugify(workspaceSlugInput);
+  const model = selectedEmbeddingModel(config);
+  return withDb(config, async ({ db }) => {
+    const id = await workspaceId(db, slug);
+    const rows = await db.select({ filename: documents.filename, title: documents.title, chunkCount: count(documentChunks.id), embedded: sql<number>`count(${documentChunks.id}) filter (where ${documentChunks.embedding} is not null)` })
+      .from(documents).leftJoin(documentChunks, eq(documentChunks.documentId, documents.id))
+      .where(and(eq(documents.workspaceId, id), eq(documents.status, "INDEXED"), eq(documents.embeddingModel, model)))
+      .groupBy(documents.id).orderBy(documents.filename);
+    return rows.map((row) => ({ documentName: documentName(row.filename), title: row.title, chunkCount: Number(row.chunkCount), embeddedChunkCount: Number(row.embedded), status: Number(row.chunkCount) > 0 && Number(row.chunkCount) === Number(row.embedded) ? "READY" : "MISSING" }));
   });
 }
 
-async function readSemanticIndex(config: ApiConfig, workspaceSlug: string) {
-  const paths = getWorkspaceStoragePaths(config.storageRoot, workspaceSlug);
-  const indexPath = path.join(paths.metadata, "embeddings.json");
-
-  try {
-    const index = JSON.parse(await readFile(indexPath, "utf8")) as SemanticIndex;
-
-    if (index.embeddingModel === selectedEmbeddingModel(config)) {
-      return index;
+export async function embedSelectedDocuments(config: ApiConfig, workspaceSlugInput: string, names: string[], onProgress?: (value: { completed: number; total: number; documentName: string }) => void, signal?: AbortSignal) {
+  const slug = slugify(workspaceSlugInput); const model = selectedEmbeddingModel(config); const provider = getEmbeddingProvider(config);
+  return withDb(config, async ({ db }) => {
+    const id = await workspaceId(db, slug);
+    // Uploads may be either .md or .txt, so compare normalized stems after the workspace filter.
+    const all = await db.select({ id: documents.id, filename: documents.filename }).from(documents).where(eq(documents.workspaceId, id));
+    const selected = all.filter((row) => names.map(slugify).includes(documentName(row.filename)));
+    let completed = 0;
+    for (const document of selected) {
+      if (signal?.aborted) throw new Error("Embedding cancelled.");
+      onProgress?.({ completed, total: selected.length, documentName: documentName(document.filename) });
+      const chunks = await db.select().from(documentChunks).where(eq(documentChunks.documentId, document.id)).orderBy(documentChunks.chunkIndex);
+      for (const chunk of chunks) {
+        if (signal?.aborted) throw new Error("Embedding cancelled.");
+        const embedding = await provider.embed(chunk.content);
+        assertEmbeddingDimensions(embedding);
+        await db.update(documentChunks).set({ embedding }).where(eq(documentChunks.id, chunk.id));
+      }
+      await db.update(documents).set({ embeddingModel: model, updatedAt: new Date() }).where(eq(documents.id, document.id));
+      completed += 1; onProgress?.({ completed, total: selected.length, documentName: documentName(document.filename) });
     }
-  } catch {
-    // Build the index on first semantic query.
-  }
-
-  return rebuildSemanticIndex(config, workspaceSlug);
+    return { workspaceSlug: slug, embeddedDocumentCount: completed };
+  });
 }
 
-async function writeSemanticIndex(config: ApiConfig, index: SemanticIndex) {
-  const paths = await ensureWorkspaceStorage(config.storageRoot, index.workspaceSlug);
-  const indexPath = path.join(paths.metadata, "embeddings.json");
-  await writeFileAtomically(indexPath, `${JSON.stringify(index, null, 2)}\n`);
+/** Compatibility name: vectors are persisted immediately, so no filesystem index exists to rebuild. */
+export async function rebuildSemanticIndex(config: ApiConfig, workspaceSlug: string) {
+  const coverage = await getEmbeddingCoverage(config, workspaceSlug); return { workspaceSlug: slugify(workspaceSlug), chunks: coverage.reduce((sum, item) => sum + item.embeddedChunkCount, 0) };
+}
+export async function invalidateSemanticIndex(_config: ApiConfig, _workspaceSlug: string) { /* DB rows are invalidated by reindex replacement. */ }
+
+export async function searchSemanticDocuments(config: ApiConfig, input: { workspaceSlug: string; query: string; limit?: number }): Promise<SemanticSearchResult> {
+  const slug = slugify(input.workspaceSlug); const model = selectedEmbeddingModel(config); const settings = await getWorkspaceIngestionSettings(config, slug); const query = await getEmbeddingProvider(config).embed(input.query);
+  assertEmbeddingDimensions(query);
+  return withDb(config, async ({ db, queryClient }) => {
+    const id = await workspaceId(db, slug); const limit = input.limit ?? settings.semanticTopK;
+    // postgres.js parameterizes the vector literal; <=> is cosine distance, so score is 1-distance.
+    const rows = await queryClient<{ filename: string; title: string; chunk_index: number; heading: string | null; content: string; score: number }[]>`
+      select d.filename, d.title, c.chunk_index, c.heading, c.content, (1 - (c.embedding <=> ${vectorLiteral(query)}::vector))::float8 as score
+      from document_chunks c join documents d on d.id = c.document_id
+      where d.workspace_id = ${id} and d.status = 'INDEXED' and d.embedding_model = ${model} and c.embedding is not null
+      order by c.embedding <=> ${vectorLiteral(query)}::vector limit ${limit}`;
+    const results = rows.filter((row) => Number(row.score) >= settings.similarityThreshold).map((row) => ({ documentName: documentName(row.filename), title: row.title, chunkIndex: row.chunk_index, heading: row.heading, score: Number(row.score), snippet: row.content.slice(0, 500) }));
+    return { queryType: "SEMANTIC_SEARCH", query: input.query, embeddingModel: model, results, sources: results.map((result) => ({ documentName: result.documentName, title: result.title, evidenceSnippet: result.snippet, score: result.score })) };
+  });
 }
 
-export async function invalidateSemanticIndex(config: ApiConfig, workspaceSlugInput: string) {
-  const paths = getWorkspaceStoragePaths(config.storageRoot, slugify(workspaceSlugInput));
-  try {
-    await unlink(path.join(paths.metadata, "embeddings.json"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+export async function getSemanticContext(config: ApiConfig, workspaceSlug: string, results: SemanticSearchResult["results"]): Promise<SemanticContextChunk[]> {
+  const wanted = new Set(results.map((result) => `${result.documentName}:${result.chunkIndex}`));
+  return withDb(config, async ({ db }) => { const id = await workspaceId(db, slugify(workspaceSlug)); const rows = await db.select({ filename: documents.filename, title: documents.title, chunkIndex: documentChunks.chunkIndex, heading: documentChunks.heading, content: documentChunks.content }).from(documentChunks).innerJoin(documents, eq(documents.id, documentChunks.documentId)).where(eq(documents.workspaceId, id)); return rows.filter((row) => wanted.has(`${documentName(row.filename)}:${row.chunkIndex}`)).map((row) => ({ documentName: documentName(row.filename), title: row.title, chunkIndex: row.chunkIndex, heading: row.heading, content: row.content })); });
 }
 
-function cosineSimilarity(left: number[], right: number[]) {
-  const length = Math.min(left.length, right.length);
-  let dot = 0;
-  let leftNorm = 0;
-  let rightNorm = 0;
-
-  for (let index = 0; index < length; index += 1) {
-    dot += left[index] * right[index];
-    leftNorm += left[index] * left[index];
-    rightNorm += right[index] * right[index];
-  }
-
-  if (leftNorm === 0 || rightNorm === 0) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+export async function getLexicalSemanticContext(config: ApiConfig, workspaceSlug: string, query: string, limit = 4): Promise<SemanticContextChunk[]> {
+  const terms = [...new Set(query.toLocaleLowerCase("tr-TR").match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
+  if (!terms.length) return [];
+  return withDb(config, async ({ db }) => {
+    const id = await workspaceId(db, slugify(workspaceSlug));
+    const rows = await db.select({ filename: documents.filename, title: documents.title, chunkIndex: documentChunks.chunkIndex, heading: documentChunks.heading, content: documentChunks.content }).from(documentChunks).innerJoin(documents, eq(documents.id, documentChunks.documentId)).where(eq(documents.workspaceId, id));
+    return rows.map((row) => ({ ...row, score: terms.reduce((score, term) => score + (row.content.toLocaleLowerCase("tr-TR").includes(term) ? 1 : 0), 0) })).filter((row) => row.score > 0).sort((left, right) => right.score - left.score).slice(0, limit).map((row) => ({ documentName: documentName(row.filename), title: row.title, chunkIndex: row.chunkIndex, heading: row.heading, content: row.content }));
+  });
 }

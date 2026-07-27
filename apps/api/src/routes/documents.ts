@@ -67,6 +67,12 @@ function handleError(reply: FastifyReply, error: unknown) {
   });
 }
 
+function uploadError(reply: FastifyReply, error: unknown, filename?: string) {
+  const message = error instanceof Error ? error.message : "Unknown upload error.";
+  const prefix = filename ? `Could not upload \"${filename}\": ` : "Could not upload file: ";
+  return reply.code(isHttpError(error) ? error.statusCode : 500).send({ error: `${prefix}${message}` });
+}
+
 export async function registerDocumentRoutes(app: FastifyInstance, config: ApiConfig) {
   await interruptAllRunningOperations(config);
   async function rejectIfOperationRunning(workspaceSlug: string, reply: FastifyReply) {
@@ -137,12 +143,20 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
     }
     try {
       const workspaceSlug = request.body?.workspaceSlug || "inbox";
-      return await Promise.all(filenames.map(async (filename) => {
+      // A conversion workspace can contain hundreds of files.  Running every
+      // database lookup at once exhausts SQLite's connection pool and turns
+      // the entire status request into a 500 response.
+      const statuses = [];
+      for (const filename of filenames) {
         const existing = await getStoredDocumentHash(config, { workspaceSlug, filename });
-        if (!existing.hash) return { filename, documentName: existing.documentName, status: "NEW" as const, indexed: false };
+        if (!existing.hash) {
+          statuses.push({ filename, documentName: existing.documentName, status: "NEW" as const, indexed: false });
+          continue;
+        }
         const hash = createHash("sha256").update(await getConvertedFile(config, workspaceSlug, filename)).digest("hex");
-        return { filename, documentName: existing.documentName, status: existing.hash === hash ? "DUPLICATE" as const : "CONFLICT" as const, indexed: existing.status === "INDEXED" };
-      }));
+        statuses.push({ filename, documentName: existing.documentName, status: existing.hash === hash ? "DUPLICATE" as const : "CONFLICT" as const, indexed: existing.status === "INDEXED" });
+      }
+      return statuses;
     } catch (error) {
       return handleError(reply, error);
     }
@@ -297,9 +311,11 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
     request.raw.once("aborted", abort);
     reply.raw.once("close", abortIfConnectionCloses);
     let operation: Awaited<ReturnType<typeof createOperation>> | undefined;
+    let uploadedFilename: string | undefined;
     try {
       const files = await request.saveRequestFiles();
       const markdownFile = files.find((file) => file.fieldname === "markdown");
+      uploadedFilename = markdownFile?.filename;
       const originalFile = files.find((file) => file.fieldname === "original");
       const fields = markdownFile?.fields ?? {};
       const title = Array.isArray(fields.title) ? fields.title[0] : fields.title;
@@ -331,7 +347,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
           ? { status: "cancelled", stage: "Cancelled" }
           : { status: "failed", stage: "Upload failed", error: error instanceof Error ? error.message : "Upload failed." });
       }
-      return handleError(reply, error);
+      return uploadError(reply, error, uploadedFilename);
     } finally {
       request.raw.removeListener("aborted", abort);
       reply.raw.removeListener("close", abortIfConnectionCloses);
@@ -342,6 +358,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
     const controller = new AbortController();
     request.raw.once("aborted", () => controller.abort());
 
+    let currentFilename: string | undefined;
     try {
       const files = await request.saveRequestFiles();
       const markdownFiles = files.filter((file) => file.fieldname === "markdown");
@@ -370,6 +387,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
       });
 
       for (const [index, markdownFile] of markdownFiles.entries()) {
+        currentFilename = markdownFile.filename;
         if (controller.signal.aborted) {
           await updateOperation(config, resolvedWorkspaceSlug, operation.id, { status: "cancelled", stage: "Cancelled", progress: Math.round((index / markdownFiles.length) * 100) });
           return reply.code(499).send({ error: "Upload cancelled." });
@@ -387,7 +405,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
 
       return reply.code(201).send({ documents });
     } catch (error) {
-      return handleError(reply, error);
+      return uploadError(reply, error, currentFilename);
     }
   });
 

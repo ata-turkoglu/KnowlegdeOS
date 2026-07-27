@@ -14,7 +14,10 @@ import { registerWorkspaceRoutes } from "./routes/workspaces.js";
 
 const config = loadConfig();
 const app = Fastify({
-  logger: true
+  logger: true,
+  // YAML extraction with local models can legitimately run for several
+  // minutes. Do not let Node's default request deadline terminate it.
+  requestTimeout: 0
 });
 
 await app.register(cors, {

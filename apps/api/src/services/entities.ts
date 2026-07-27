@@ -1,386 +1,98 @@
-import { createHash } from "node:crypto";
-import { readFile, readdir, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { and, eq } from "drizzle-orm";
+import { createDatabaseClient, documentEntities, documents, entities, entityAliases, relationships, workspaces } from "@knowledgeos/database";
+import type { LLMRelationship } from "@knowledgeos/ai";
 import type { EntityType } from "@knowledgeos/shared";
 import { normalizeForSearch, type ExtractedEntity } from "@knowledgeos/ingestion";
 import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
-import { ensureWorkspaceStorage, getWorkspaceStoragePaths } from "./storage.js";
-import { writeFileAtomically } from "./storage.js";
-import type { IndexedDocumentMetadata } from "./documents.js";
 
-export type EntityAlias = {
-  alias: string;
-  normalizedAlias: string;
-  confidence: number;
-  source: "REGEX" | "FRONTMATTER" | "USER" | "IMPORT";
-};
+export type EntityAlias = { alias: string; normalizedAlias: string; confidence: number; source: "REGEX" | "FRONTMATTER" | "USER" | "IMPORT" };
+export type EntityDocumentLink = { documentName: string; title: string; markdownPath: string; occurrenceCount: number; evidenceSnippet: string; confidence: number };
+export type CanonicalEntity = { id: string; workspaceSlug: string; type: EntityType; canonicalValue: string; normalizedValue: string; aliases: EntityAlias[]; documents: EntityDocumentLink[]; createdAt: string; updatedAt: string };
+export type EntityIndex = { version: 1; workspaceSlug: string; updatedAt: string; entities: CanonicalEntity[] };
 
-export type EntityDocumentLink = {
-  documentName: string;
-  title: string;
-  markdownPath: string;
-  occurrenceCount: number;
-  evidenceSnippet: string;
-  confidence: number;
-};
+async function withDb<T>(config: ApiConfig, fn: (client: ReturnType<typeof createDatabaseClient>) => Promise<T>) { const client = createDatabaseClient(config.databaseUrl); try { return await fn(client); } finally { await client.close(); } }
+async function workspace(db: any, slug: string) { const [row] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (!row) throw new HttpError(404, "Workspace not found."); return row; }
+const name = (filename: string) => slugify(filename.replace(/\.[^.]+$/, ""));
+const aliasSource = (source: string) => source === "LLM" ? "LLM" : source === "IMPORT" ? "IMPORT" : "REGEX" as const;
 
-export type CanonicalEntity = {
-  id: string;
-  workspaceSlug: string;
-  type: EntityType;
-  canonicalValue: string;
-  normalizedValue: string;
-  aliases: EntityAlias[];
-  documents: EntityDocumentLink[];
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type EntityIndex = {
-  version: 1;
-  workspaceSlug: string;
-  updatedAt: string;
-  entities: CanonicalEntity[];
-};
-
-type EntityCandidate = ExtractedEntity & {
-  document: EntityDocumentLink;
-};
-
-export async function rebuildEntityIndex(config: ApiConfig, workspaceSlugInput: string) {
-  const workspaceSlug = slugify(workspaceSlugInput);
-  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
-  const metadataFiles = await readdir(paths.metadata);
-  const candidates: EntityCandidate[] = [];
-
-  for (const fileName of metadataFiles) {
-    if (!fileName.endsWith(".json") || fileName === "workspace.json" || fileName === "entities.json") {
-      continue;
+export async function replaceDocumentEntities(config: ApiConfig, workspaceSlug: string, documentId: string, extracted: ExtractedEntity[]) {
+  return withDb(config, async ({ db }) => db.transaction(async (tx) => {
+    const ws = await workspace(tx, slugify(workspaceSlug));
+    await tx.delete(documentEntities).where(eq(documentEntities.documentId, documentId));
+    for (const item of extracted) {
+      const [entity] = await tx.insert(entities).values({ workspaceId: ws.id, type: item.type, canonicalValue: item.value, normalizedValue: item.normalizedValue }).onConflictDoUpdate({ target: [entities.workspaceId, entities.type, entities.normalizedValue], set: { canonicalValue: item.value, updatedAt: new Date() } }).returning();
+      await tx.insert(entityAliases).values({ entityId: entity.id, alias: item.value, normalizedAlias: item.normalizedValue, confidence: item.confidence, source: aliasSource(item.source) }).onConflictDoNothing();
+      await tx.insert(documentEntities).values({ documentId, entityId: entity.id, occurrenceCount: 1, evidenceSnippet: item.evidenceSnippet, confidence: item.confidence }).onConflictDoUpdate({ target: [documentEntities.documentId, documentEntities.entityId], set: { occurrenceCount: 1, evidenceSnippet: item.evidenceSnippet, confidence: item.confidence } });
     }
+  }));
+}
 
-    const filePath = path.join(paths.metadata, fileName);
-    const metadata = JSON.parse(await readFile(filePath, "utf8")) as Partial<IndexedDocumentMetadata>;
+/** Replaces LLM-extracted, evidence-backed links for one document. */
+export async function replaceDocumentRelationships(config: ApiConfig, workspaceSlug: string, documentId: string, extracted: LLMRelationship[]) {
+  return withDb(config, async ({ db }) => db.transaction(async (tx) => {
+    const ws = await workspace(tx, slugify(workspaceSlug));
+    await tx.delete(relationships).where(and(eq(relationships.documentId, documentId), eq(relationships.origin, "LLM")));
+    if (!extracted.length) return;
 
-    if (metadata.status !== "INDEXED" || !metadata.ingestion) {
-      continue;
+    const indexedEntities = await tx.select().from(entities).where(eq(entities.workspaceId, ws.id));
+    const byNormalizedValue = new Map(indexedEntities.map((entity) => [entity.normalizedValue, entity]));
+    const seen = new Set<string>();
+
+    for (const item of extracted) {
+      const source = byNormalizedValue.get(normalizeForSearch(item.source));
+      const target = byNormalizedValue.get(normalizeForSearch(item.target));
+      const relation = item.relation.trim();
+      const evidenceSnippet = item.evidence.trim();
+      if (!source || !target || source.id === target.id || !relation || !evidenceSnippet) continue;
+      const key = `${source.id}:${relation}:${target.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      await tx.insert(relationships).values({ workspaceId: ws.id, documentId, sourceEntityId: source.id, relation, targetEntityId: target.id, evidenceSnippet, confidence: 0.8, origin: "LLM" });
     }
+  }));
+}
 
-    const documentName = path.parse(fileName).name;
-
-    for (const entity of metadata.ingestion.entities) {
-      candidates.push({
-        ...entity,
-        document: {
-          documentName,
-          title: metadata.title ?? documentName,
-          markdownPath: metadata.markdownPath ?? "",
-          occurrenceCount: 1,
-          evidenceSnippet: entity.evidenceSnippet,
-          confidence: entity.confidence
-        }
-      });
+/**
+ * Adds conservative no-LLM graph links. They only mean two entities occur in
+ * the same document; they never imply ownership, kinship, or a legal action.
+ */
+export async function replaceDocumentRuleRelationships(config: ApiConfig, workspaceSlug: string, documentId: string) {
+  return withDb(config, async ({ db }) => db.transaction(async (tx) => {
+    const ws = await workspace(tx, slugify(workspaceSlug));
+    await tx.delete(relationships).where(and(eq(relationships.documentId, documentId), eq(relationships.origin, "RULE")));
+    const indexed = await tx.select({ id: entities.id, type: entities.type, value: entities.canonicalValue })
+      .from(documentEntities).innerJoin(entities, eq(entities.id, documentEntities.entityId))
+      .where(eq(documentEntities.documentId, documentId));
+    const people = indexed.filter((entity) => entity.type === "PERSON");
+    const pairs: Array<{ source: typeof indexed[number]; relation: string; target: typeof indexed[number] }> = [];
+    const addPersonLinks = (targetType: "PARCEL" | "PLACE" | "ORGANIZATION", relation: string) => {
+      const targets = indexed.filter((entity) => entity.type === targetType);
+      for (const source of people) for (const target of targets) pairs.push({ source, relation, target });
+    };
+    addPersonLinks("PARCEL", "PARSELLE_ANILIR");
+    addPersonLinks("PLACE", "YERLE_ANILIR");
+    addPersonLinks("ORGANIZATION", "KURUMLA_ANILIR");
+    for (let left = 0; left < people.length; left += 1) for (let right = left + 1; right < people.length; right += 1) {
+      const [source, target] = [people[left], people[right]].sort((a, b) => a.id.localeCompare(b.id));
+      pairs.push({ source, relation: "AYNI_BELGEDE_ANILIR", target });
     }
-  }
-
-  const index = mergeCandidatesIntoIndex(workspaceSlug, candidates);
-  await writeEntityIndex(config, index);
-
-  return index;
-}
-
-export async function readEntityIndex(config: ApiConfig, workspaceSlugInput: string) {
-  const workspaceSlug = slugify(workspaceSlugInput);
-  const paths = getWorkspaceStoragePaths(config.storageRoot, workspaceSlug);
-  const indexPath = path.join(paths.metadata, "entities.json");
-
-  try {
-    return JSON.parse(await readFile(indexPath, "utf8")) as EntityIndex;
-  } catch {
-    return rebuildEntityIndex(config, workspaceSlug);
-  }
-}
-
-export async function listEntities(config: ApiConfig, workspaceSlugInput: string) {
-  const index = await readEntityIndex(config, workspaceSlugInput);
-  return index.entities;
-}
-
-export async function getEntity(
-  config: ApiConfig,
-  workspaceSlugInput: string,
-  entityId: string
-) {
-  const index = await readEntityIndex(config, workspaceSlugInput);
-  const entity = index.entities.find((item) => item.id === entityId);
-
-  if (!entity) {
-    throw new HttpError(404, "Entity not found.");
-  }
-
-  return entity;
-}
-
-export async function addEntityAlias(
-  config: ApiConfig,
-  workspaceSlugInput: string,
-  entityId: string,
-  alias: string
-) {
-  const cleanAlias = alias.trim();
-
-  if (!cleanAlias) {
-    throw new HttpError(400, "Alias is required.");
-  }
-
-  const index = await readEntityIndex(config, workspaceSlugInput);
-  const entity = index.entities.find((item) => item.id === entityId);
-
-  if (!entity) {
-    throw new HttpError(404, "Entity not found.");
-  }
-
-  addAlias(entity, {
-    alias: cleanAlias,
-    normalizedAlias: normalizeForSearch(cleanAlias),
-    confidence: 1,
-    source: "USER"
-  });
-  entity.updatedAt = new Date().toISOString();
-  index.updatedAt = entity.updatedAt;
-  await writeEntityIndex(config, index);
-
-  return entity;
-}
-
-export async function removeEntityAlias(
-  config: ApiConfig,
-  workspaceSlugInput: string,
-  entityId: string,
-  normalizedAlias: string
-) {
-  const index = await readEntityIndex(config, workspaceSlugInput);
-  const entity = index.entities.find((item) => item.id === entityId);
-
-  if (!entity) {
-    throw new HttpError(404, "Entity not found.");
-  }
-
-  const aliasIndex = entity.aliases.findIndex(
-    (alias) => alias.normalizedAlias === normalizedAlias && alias.source === "USER"
-  );
-
-  if (aliasIndex === -1) {
-    throw new HttpError(404, "User alias not found.");
-  }
-
-  entity.aliases.splice(aliasIndex, 1);
-  entity.updatedAt = new Date().toISOString();
-  index.updatedAt = entity.updatedAt;
-  await writeEntityIndex(config, index);
-
-  return entity;
-}
-
-export async function mergeEntities(
-  config: ApiConfig,
-  workspaceSlugInput: string,
-  sourceEntityId: string,
-  targetEntityId: string
-) {
-  if (sourceEntityId === targetEntityId) {
-    throw new HttpError(400, "Source and target entities must be different.");
-  }
-
-  const index = await readEntityIndex(config, workspaceSlugInput);
-  const source = index.entities.find((item) => item.id === sourceEntityId);
-  const target = index.entities.find((item) => item.id === targetEntityId);
-
-  if (!source || !target) {
-    throw new HttpError(404, "Entity not found.");
-  }
-
-  if (source.type !== target.type) {
-    throw new HttpError(400, "Only entities with the same type can be merged.");
-  }
-
-  addAlias(target, {
-    alias: source.canonicalValue,
-    normalizedAlias: source.normalizedValue,
-    confidence: 1,
-    source: "USER"
-  });
-
-  for (const alias of source.aliases) {
-    addAlias(target, alias);
-  }
-
-  for (const document of source.documents) {
-    addDocumentLink(target, document);
-  }
-
-  target.updatedAt = new Date().toISOString();
-  index.entities = index.entities.filter((item) => item.id !== source.id);
-  index.updatedAt = target.updatedAt;
-  await writeEntityIndex(config, index);
-
-  return target;
-}
-
-export function mergeCandidatesIntoIndex(
-  workspaceSlug: string,
-  candidates: EntityCandidate[]
-): EntityIndex {
-  const now = new Date().toISOString();
-  const entities: CanonicalEntity[] = [];
-
-  for (const candidate of candidates) {
-    const groupKey = entityGroupKey(candidate);
-    let entity = entities.find((item) => shouldMergeEntity(item, candidate));
-
-    if (!entity) {
-      entity = {
-        id: entityId(workspaceSlug, candidate.type, groupKey),
-        workspaceSlug,
-        type: candidate.type,
-        canonicalValue: candidate.value,
-        normalizedValue: candidate.normalizedValue,
-        aliases: [],
-        documents: [],
-        createdAt: now,
-        updatedAt: now
-      };
-      entities.push(entity);
+    const seen = new Set<string>();
+    for (const { source, relation, target } of pairs) {
+      const key = `${source.id}:${relation}:${target.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      await tx.insert(relationships).values({ workspaceId: ws.id, documentId, sourceEntityId: source.id, relation, targetEntityId: target.id, evidenceSnippet: `${source.value} ve ${target.value} aynı belgede birlikte anılmaktadır.`, confidence: 0.4, origin: "RULE" });
     }
-
-    if (candidate.value.length > entity.canonicalValue.length) {
-      entity.canonicalValue = candidate.value;
-      entity.normalizedValue = candidate.normalizedValue;
-    }
-
-    addAlias(entity, {
-      alias: candidate.value,
-      normalizedAlias: candidate.normalizedValue,
-      confidence: candidate.confidence,
-      source: candidate.source
-    });
-    addDocumentLink(entity, candidate.document);
-  }
-
-  return {
-    version: 1,
-    workspaceSlug,
-    updatedAt: now,
-    entities: entities.sort((a, b) => a.canonicalValue.localeCompare(b.canonicalValue, "tr"))
-  };
+  }));
 }
 
-function entityGroupKey(entity: Pick<CanonicalEntity, "type" | "normalizedValue">) {
-  if (entity.type !== "PERSON") {
-    return entity.normalizedValue;
-  }
-
-  const parts = entity.normalizedValue.split(" ").filter(Boolean);
-  const surname = parts.at(-1) ?? entity.normalizedValue;
-  const initial = parts[0]?.[0] ?? "";
-
-  return initial ? `${initial}:${surname}` : surname;
-}
-
-function shouldMergeEntity(
-  existing: Pick<CanonicalEntity, "type" | "normalizedValue">,
-  candidate: Pick<EntityCandidate, "type" | "normalizedValue">
-) {
-  if (existing.type !== candidate.type) {
-    return false;
-  }
-
-  if (existing.type !== "PERSON") {
-    return existing.normalizedValue === candidate.normalizedValue;
-  }
-
-  const existingParts = existing.normalizedValue.split(" ").filter(Boolean);
-  const candidateParts = candidate.normalizedValue.split(" ").filter(Boolean);
-  const existingSurname = existingParts.at(-1) ?? existing.normalizedValue;
-  const candidateSurname = candidateParts.at(-1) ?? candidate.normalizedValue;
-  const existingInitial = existingParts[0]?.[0];
-  const candidateInitial = candidateParts[0]?.[0];
-
-  if (existingInitial && candidateInitial && existingInitial !== candidateInitial) {
-    return false;
-  }
-
-  return (
-    existingSurname === candidateSurname ||
-    levenshteinDistance(existingSurname, candidateSurname) <= 2
-  );
-}
-
-function levenshteinDistance(left: string, right: string) {
-  const matrix = Array.from({ length: left.length + 1 }, () =>
-    Array<number>(right.length + 1).fill(0)
-  );
-
-  for (let row = 0; row <= left.length; row += 1) {
-    matrix[row][0] = row;
-  }
-
-  for (let column = 0; column <= right.length; column += 1) {
-    matrix[0][column] = column;
-  }
-
-  for (let row = 1; row <= left.length; row += 1) {
-    for (let column = 1; column <= right.length; column += 1) {
-      const substitutionCost = left[row - 1] === right[column - 1] ? 0 : 1;
-      matrix[row][column] = Math.min(
-        matrix[row - 1][column] + 1,
-        matrix[row][column - 1] + 1,
-        matrix[row - 1][column - 1] + substitutionCost
-      );
-    }
-  }
-
-  return matrix[left.length][right.length];
-}
-
-function addAlias(entity: CanonicalEntity, alias: EntityAlias) {
-  if (
-    entity.aliases.some(
-      (existing) => existing.normalizedAlias === alias.normalizedAlias
-    )
-  ) {
-    return;
-  }
-
-  entity.aliases.push(alias);
-  entity.aliases.sort((a, b) => a.alias.localeCompare(b.alias, "tr"));
-}
-
-function addDocumentLink(entity: CanonicalEntity, document: EntityDocumentLink) {
-  const existing = entity.documents.find(
-    (item) => item.documentName === document.documentName
-  );
-
-  if (existing) {
-    existing.occurrenceCount += document.occurrenceCount;
-    existing.confidence = Math.max(existing.confidence, document.confidence);
-    return;
-  }
-
-  entity.documents.push(document);
-  entity.documents.sort((a, b) => a.documentName.localeCompare(b.documentName, "tr"));
-}
-
-async function writeEntityIndex(config: ApiConfig, index: EntityIndex) {
-  const paths = await ensureWorkspaceStorage(config.storageRoot, index.workspaceSlug);
-  const indexPath = path.join(paths.metadata, "entities.json");
-  await writeFileAtomically(indexPath, `${JSON.stringify(index, null, 2)}\n`);
-}
-
-function entityId(workspaceSlug: string, type: EntityType, groupKey: string) {
-  return createHash("sha1")
-    .update(`${workspaceSlug}:${type}:${groupKey}`)
-    .digest("hex")
-    .slice(0, 16);
-}
+async function list(config: ApiConfig, workspaceSlug: string): Promise<CanonicalEntity[]> { const slug = slugify(workspaceSlug); return withDb(config, async ({ db }) => { const ws = await workspace(db, slug); const rows = await db.select().from(entities).where(eq(entities.workspaceId, ws.id)); return Promise.all(rows.map(async (entity) => { const aliases = await db.select().from(entityAliases).where(eq(entityAliases.entityId, entity.id)); const links = await db.select({ filename: documents.filename, title: documents.title, markdownPath: documents.markdownPath, occurrenceCount: documentEntities.occurrenceCount, evidenceSnippet: documentEntities.evidenceSnippet, confidence: documentEntities.confidence }).from(documentEntities).innerJoin(documents, eq(documents.id, documentEntities.documentId)).where(eq(documentEntities.entityId, entity.id)); return { id: entity.id, workspaceSlug: slug, type: entity.type, canonicalValue: entity.canonicalValue, normalizedValue: entity.normalizedValue, aliases: aliases.map((a) => ({ alias: a.alias, normalizedAlias: a.normalizedAlias, confidence: a.confidence, source: a.source === "LLM" ? "REGEX" : a.source })), documents: links.map((link) => ({ documentName: name(link.filename), title: link.title, markdownPath: link.markdownPath, occurrenceCount: link.occurrenceCount, evidenceSnippet: link.evidenceSnippet, confidence: link.confidence })), createdAt: entity.createdAt.toISOString(), updatedAt: entity.updatedAt.toISOString() } as CanonicalEntity; })); }); }
+export async function listEntities(config: ApiConfig, workspaceSlug: string) { return list(config, workspaceSlug); }
+export async function readEntityIndex(config: ApiConfig, workspaceSlug: string): Promise<EntityIndex> { const items = await list(config, workspaceSlug); return { version: 1, workspaceSlug: slugify(workspaceSlug), updatedAt: new Date().toISOString(), entities: items }; }
+export async function rebuildEntityIndex(config: ApiConfig, workspaceSlug: string) { return readEntityIndex(config, workspaceSlug); }
+export async function getEntity(config: ApiConfig, workspaceSlug: string, id: string) { const entity = (await list(config, workspaceSlug)).find((item) => item.id === id); if (!entity) throw new HttpError(404, "Entity not found."); return entity; }
+export async function addEntityAlias(config: ApiConfig, workspaceSlug: string, id: string, alias: string) { if (!alias.trim()) throw new HttpError(400, "Alias is required."); return withDb(config, async ({ db }) => { const entity = await getEntity(config, workspaceSlug, id); await db.insert(entityAliases).values({ entityId: id, alias: alias.trim(), normalizedAlias: normalizeForSearch(alias), source: "USER" }).onConflictDoNothing(); return getEntity(config, workspaceSlug, entity.id); }); }
+export async function removeEntityAlias(config: ApiConfig, workspaceSlug: string, id: string, normalizedAlias: string) { return withDb(config, async ({ db }) => { await db.delete(entityAliases).where(and(eq(entityAliases.entityId, id), eq(entityAliases.normalizedAlias, normalizedAlias), eq(entityAliases.source, "USER"))); return getEntity(config, workspaceSlug, id); }); }
+export async function mergeEntities(config: ApiConfig, workspaceSlug: string, sourceId: string, targetId: string) { if (sourceId === targetId) throw new HttpError(400, "Source and target entities must be different."); return withDb(config, async ({ db }) => { const [source, target] = await Promise.all([getEntity(config, workspaceSlug, sourceId), getEntity(config, workspaceSlug, targetId)]); if (source.type !== target.type) throw new HttpError(400, "Only entities with the same type can be merged."); for (const alias of [source.canonicalValue, ...source.aliases.map((a) => a.alias)]) await db.insert(entityAliases).values({ entityId: targetId, alias, normalizedAlias: normalizeForSearch(alias), source: "USER" }).onConflictDoNothing(); const links = await db.select().from(documentEntities).where(eq(documentEntities.entityId, sourceId)); for (const link of links) await db.insert(documentEntities).values({ documentId: link.documentId, entityId: targetId, occurrenceCount: link.occurrenceCount, evidenceSnippet: link.evidenceSnippet, confidence: link.confidence }).onConflictDoNothing(); await db.delete(entities).where(eq(entities.id, sourceId)); return getEntity(config, workspaceSlug, targetId); }); }

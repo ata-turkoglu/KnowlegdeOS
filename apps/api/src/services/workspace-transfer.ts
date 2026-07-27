@@ -4,6 +4,9 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
+import { backups, createDatabaseClient, documents, workspaces } from "@knowledgeos/database";
+import { and, eq } from "drizzle-orm";
+import { parseMarkdownFrontmatter } from "@knowledgeos/ingestion";
 import {
   ensureWorkspaceStorage,
   getWorkspaceStoragePaths,
@@ -176,7 +179,68 @@ export async function createWorkspaceExportBundle(
 }
 
 export async function createWorkspaceBackup(config: ApiConfig, workspaceSlug: string) {
-  return writeBundle(config, workspaceSlug, "backups");
+  const result = await writeBundle(config, workspaceSlug, "backups");
+  const client = createDatabaseClient(config.databaseUrl);
+  try {
+    const [workspace] = await client.db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.slug, result.workspaceSlug)).limit(1);
+    if (!workspace) throw new HttpError(404, "Workspace not found.");
+    const [backup] = await client.db.insert(backups).values({ workspaceId: workspace.id, filePath: result.bundlePath }).returning();
+    return { ...result, backup: { id: backup.id, createdAt: backup.createdAt.toISOString(), note: backup.note } };
+  } finally {
+    await client.close();
+  }
+}
+
+export async function listWorkspaceBackups(config: ApiConfig, workspaceSlugInput: string) {
+  const workspaceSlug = slugify(workspaceSlugInput);
+  const client = createDatabaseClient(config.databaseUrl);
+  try {
+    const [workspace] = await client.db.select({ id: workspaces.id }).from(workspaces).where(eq(workspaces.slug, workspaceSlug)).limit(1);
+    if (!workspace) throw new HttpError(404, "Workspace not found.");
+    const rows = await client.db.select().from(backups).where(eq(backups.workspaceId, workspace.id)).orderBy(backups.createdAt);
+    return rows.map((backup) => ({ id: backup.id, filePath: backup.filePath, note: backup.note, createdAt: backup.createdAt.toISOString() }));
+  } finally {
+    await client.close();
+  }
+}
+
+function metadataText(frontmatter: Record<string, string | string[]>, key: string) {
+  const value = frontmatter[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function restoreWorkspaceDocuments(config: ApiConfig, workspaceSlug: string) {
+  const paths = getWorkspaceStoragePaths(config.storageRoot, workspaceSlug);
+  const entries = await readdir(paths.markdown, { withFileTypes: true });
+  const markdownFiles = entries.filter((entry) => entry.isFile() && [".md", ".txt"].includes(path.extname(entry.name).toLowerCase()));
+  const client = createDatabaseClient(config.databaseUrl);
+
+  try {
+    let [workspace] = await client.db.select().from(workspaces).where(eq(workspaces.slug, workspaceSlug)).limit(1);
+    if (!workspace) {
+      [workspace] = await client.db.insert(workspaces).values({ name: workspaceSlug, slug: workspaceSlug, storagePath: paths.root }).returning();
+    }
+
+    for (const entry of markdownFiles) {
+      const markdownPath = path.join(paths.markdown, entry.name);
+      const markdown = await readFile(markdownPath, "utf8");
+      const parsed = parseMarkdownFrontmatter(markdown);
+      const title = metadataText(parsed.frontmatter, "title") ?? path.parse(entry.name).name;
+      const documentType = metadataText(parsed.frontmatter, "document_type");
+      const date = metadataText(parsed.frontmatter, "date");
+      const documentDate = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+      const hash = createHash("sha256").update(markdown).digest("hex");
+      const [existing] = await client.db.select({ id: documents.id }).from(documents).where(and(eq(documents.workspaceId, workspace.id), eq(documents.filename, entry.name))).limit(1);
+
+      const values = { filename: entry.name, title, content: parsed.content, normalizedContent: parsed.content, markdownPath, hash, metadata: parsed.frontmatter, documentType, documentDate, status: "UPLOADED" as const, embeddingModel: null, indexedAt: null, summary: null, llmExtraction: null, llmExtractionError: null, updatedAt: new Date() };
+      if (existing) await client.db.update(documents).set(values).where(eq(documents.id, existing.id));
+      else await client.db.insert(documents).values({ workspaceId: workspace.id, ...values });
+    }
+
+    return markdownFiles.length;
+  } finally {
+    await client.close();
+  }
 }
 
 function rewriteImportedMetadata(
@@ -267,10 +331,16 @@ export async function importWorkspaceBundle(
     restoredFiles += 1;
   }
 
+  // Document state is stored in PostgreSQL, while the portable bundle contains
+  // source Markdown. Recreate upload records so an imported workspace is usable
+  // immediately; indexes are deliberately rebuilt from that source afterwards.
+  const restoredDocumentCount = await restoreWorkspaceDocuments(config, workspaceSlug);
+
   return {
     imported: true,
     workspaceSlug,
     restoredFiles,
+    restoredDocumentCount,
     storagePath: paths.root
   };
 }

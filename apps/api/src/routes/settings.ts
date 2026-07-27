@@ -5,6 +5,8 @@ import path from "node:path";
 import { getEnvironmentPath, type ApiConfig, type LlmTemperatureProfile } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
 import { getWorkspaceIngestionSettings, saveWorkspaceIngestionSettings, type WorkspaceIngestionSettings } from "../services/workspace-settings.js";
+import { getWorkspaceYamlMetadataPrompt, saveWorkspaceYamlMetadataPrompt } from "../services/workspace-yaml-prompt.js";
+import { getWorkspaceChatSystemPrompt, saveWorkspaceChatSystemPrompt } from "../services/workspace-chat-prompt.js";
 import { getWorkspaceReindexStatus, reindexWorkspaceDocuments } from "../services/documents.js";
 
 type OllamaTagsResponse = {
@@ -293,6 +295,24 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     settings: await saveWorkspaceIngestionSettings(config, request.params.workspaceSlug, request.body ?? {}),
     reindex: await getWorkspaceReindexStatus(config, request.params.workspaceSlug)
   }));
+
+  app.get<{ Params: { workspaceSlug: string } }>("/api/settings/yaml-metadata-prompt/:workspaceSlug", async (request) => ({
+    workspaceSlug: request.params.workspaceSlug,
+    prompt: await getWorkspaceYamlMetadataPrompt(config, request.params.workspaceSlug)
+  }));
+
+  app.put<{ Params: { workspaceSlug: string }; Body: { prompt?: unknown } }>("/api/settings/yaml-metadata-prompt/:workspaceSlug", async (request, reply) => {
+    try {
+      return { workspaceSlug: request.params.workspaceSlug, prompt: await saveWorkspaceYamlMetadataPrompt(config, request.params.workspaceSlug, request.body?.prompt) };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "YAML metadata prompt could not be saved." });
+    }
+  });
+  app.get<{ Params: { workspaceSlug: string } }>("/api/settings/chat-system-prompt/:workspaceSlug", async (request) => ({ workspaceSlug: request.params.workspaceSlug, prompt: await getWorkspaceChatSystemPrompt(config, request.params.workspaceSlug) }));
+  app.put<{ Params: { workspaceSlug: string }; Body: { prompt?: unknown } }>("/api/settings/chat-system-prompt/:workspaceSlug", async (request, reply) => {
+    try { return { workspaceSlug: request.params.workspaceSlug, prompt: await saveWorkspaceChatSystemPrompt(config, request.params.workspaceSlug, request.body?.prompt) }; }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "Chat system prompt could not be saved." }); }
+  });
 
   app.post<{ Params: { workspaceSlug: string }; Body: { useLlm?: boolean } }>("/api/settings/ingestion/:workspaceSlug/reindex", async (request, reply) => {
     const workspaceSlug = slugify(request.params.workspaceSlug || "merter-arsivi");

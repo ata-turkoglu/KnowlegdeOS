@@ -14,6 +14,7 @@ type StoredMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  createdAt: string;
   queryType: string | null;
   sources: ChatResponse["sources"];
 };
@@ -64,6 +65,7 @@ export async function listChatSessions(config: ApiConfig, workspaceSlug: string)
           id: message.id,
           role: message.role,
           content: message.content,
+          createdAt: message.createdAt.toISOString(),
           queryType: message.queryType,
           sources: asSources(message.sourcesJson)
         }))

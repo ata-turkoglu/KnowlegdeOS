@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { MultipartValue, SavedMultipartFile } from "@fastify/multipart";
 import type { ApiConfig } from "../config/env.js";
 import { isHttpError } from "../lib/http-errors.js";
-import { convertWordDocument, deleteConvertedFile, getConvertedFile, listConvertedFiles, splitConvertedFile } from "../services/conversions.js";
+import { addGeneratedYamlMetadata, convertWordDocument, deleteConvertedFile, getConvertedFile, listConvertedFiles, splitConvertedFile } from "../services/conversions.js";
 
 function fail(reply: FastifyReply, error: unknown) {
   if (isHttpError(error)) return reply.code(error.statusCode).send({ error: error.message });
@@ -44,6 +44,11 @@ export async function registerConversionRoutes(app: FastifyInstance, config: Api
 
   app.post<{ Params: { workspaceSlug: string; filename: string } }>("/api/conversions/:workspaceSlug/:filename/split", async (request, reply) => {
     try { return await splitConvertedFile(config, request.params.workspaceSlug, request.params.filename); }
+    catch (error) { return fail(reply, error); }
+  });
+
+  app.post<{ Params: { workspaceSlug: string; filename: string } }>("/api/conversions/:workspaceSlug/:filename/generate-yaml", async (request, reply) => {
+    try { return await addGeneratedYamlMetadata(config, request.params.workspaceSlug, request.params.filename); }
     catch (error) { return fail(reply, error); }
   });
 }

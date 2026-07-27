@@ -14,6 +14,7 @@ import {
   createWorkspaceBackup,
   createWorkspaceExportBundle,
   importWorkspaceBundle,
+  listWorkspaceBackups,
   type WorkspaceTransferBundle
 } from "../services/workspace-transfer.js";
 
@@ -106,6 +107,17 @@ export async function registerWorkspaceRoutes(
     async (request, reply) => {
       try {
         return await createWorkspaceExportBundle(config, request.params.workspaceSlug);
+      } catch (error) {
+        return handleError(reply, error);
+      }
+    }
+  );
+
+  app.get<{ Params: { workspaceSlug: string } }>(
+    "/api/workspaces/:workspaceSlug/backups",
+    async (request, reply) => {
+      try {
+        return await listWorkspaceBackups(config, request.params.workspaceSlug);
       } catch (error) {
         return handleError(reply, error);
       }
