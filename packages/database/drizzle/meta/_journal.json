@@ -8,6 +8,34 @@
       "when": 1782752400000,
       "tag": "0000_initial_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784840000000,
+      "tag": "0001_document_index_persistence",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784841000000,
+      "tag": "0002_embedding_dimension_1024",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784930000000,
+      "tag": "0003_yaml_metadata_relationships",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785200000000,
+      "tag": "0004_relationship_origin",
+      "breakpoints": true
     }
   ]
 }

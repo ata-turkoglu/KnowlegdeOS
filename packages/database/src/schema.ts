@@ -25,7 +25,8 @@ export const entityTypeEnum = pgEnum("entity_type", [
   "CASE_NUMBER",
   "NOTARY_NUMBER",
   "PROPERTY",
-  "EVENT"
+  "EVENT",
+  "KEYWORD"
 ]);
 
 export const entityAliasSourceEnum = pgEnum("entity_alias_source", [
@@ -82,6 +83,12 @@ export const documents = pgTable(
     sourceOriginalPath: text("source_original_path"),
     markdownPath: text("markdown_path").notNull(),
     summary: text("summary"),
+    /** Parsed YAML frontmatter. Keeps source-specific filtering data queryable later. */
+    metadata: jsonb("metadata").notNull().default({}),
+    ingestionSettings: jsonb("ingestion_settings").notNull().default({}),
+    llmExtraction: jsonb("llm_extraction"),
+    llmExtractionError: text("llm_extraction_error"),
+    embeddingModel: text("embedding_model"),
     documentType: text("document_type"),
     documentDate: date("document_date"),
     status: documentStatusEnum("status").notNull().default("UPLOADED"),
@@ -107,7 +114,8 @@ export const documentChunks = pgTable(
     content: text("content").notNull(),
     normalizedContent: text("normalized_content").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
-    embedding: vector("embedding", { dimensions: 384 }),
+    // bge-m3 (the configured default) emits 1024 dimensions.
+    embedding: vector("embedding", { dimensions: 1024 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => ({
@@ -207,6 +215,8 @@ export const relationships = pgTable(
       .references(() => entities.id, { onDelete: "cascade" }),
     evidenceSnippet: text("evidence_snippet").notNull(),
     confidence: real("confidence").notNull().default(1),
+    /** RULE = conservative co-occurrence; LLM = extracted semantic relation. */
+    origin: text("origin").notNull().default("LLM"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => ({

@@ -8,7 +8,8 @@ export const entityTypes = [
   "CASE_NUMBER",
   "NOTARY_NUMBER",
   "PROPERTY",
-  "EVENT"
+  "EVENT",
+  "KEYWORD"
 ] as const;
 
 export type EntityType = (typeof entityTypes)[number];
