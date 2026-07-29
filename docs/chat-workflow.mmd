@@ -1,0 +1,45 @@
+%% GENERATED FILE — packages/shared/src/chat-workflow.ts dosyasından üretilir.
+%% Elle düzenlemeyin: corepack pnpm docs:generate
+flowchart LR
+  received["Soru alındı"]
+  classify["Sorgu sınıflandırma"]
+  retrieve["Paralel hybrid retrieval"]
+
+  subgraph retrieve_branches[Paralel hybrid retrieval]
+    direction TB
+    entity["Entity arama"]
+    lexical["Lexical arama"]
+    semantic["Semantic arama"]
+  end
+  fuse["RRF birleştirme"]
+  rerank["Yeniden sıralama"]
+  context["Context oluşturma"]
+  generate["LLM yanıt üretimi"]
+  validate["Kaynak doğrulama"]
+  persist["Geçmişe kaydetme"]
+  deliver["Yanıtı gönderme"]
+
+  received --> classify
+  classify --> retrieve
+  retrieve --> entity
+  retrieve --> lexical
+  retrieve --> semantic
+  entity --> fuse
+  lexical --> fuse
+  semantic --> fuse
+  fuse --> rerank
+  rerank --> context
+  context --> generate
+  generate --> validate
+  validate --> persist
+  persist --> deliver
+  validate -.->|Kontrollü tekrar| generate
+
+  classDef chat fill:#eff6ff,stroke:#2563eb,color:#172554;
+  classDef retrieval fill:#fff7ed,stroke:#d97706,color:#7c2d12;
+  classDef model fill:#f5f3ff,stroke:#7c3aed,color:#3b0764;
+  classDef control fill:#fef2f2,stroke:#dc2626,color:#7f1d1d;
+  class received,classify,context,deliver chat;
+  class retrieve,entity,lexical,semantic,fuse,rerank retrieval;
+  class generate model;
+  class validate,persist control;

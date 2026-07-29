@@ -2,6 +2,8 @@
 
 Local-first AI-powered archive and knowledge management system.
 
+Project structure, development rules, and canonical process documentation start at [PROJECT.md](PROJECT.md).
+
 ## Sprint 1
 
 This repository is structured as a pnpm monorepo:
