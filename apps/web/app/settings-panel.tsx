@@ -16,6 +16,7 @@ const embeddingProviderOptions = providerOptions.filter((provider) => provider.v
 const defaultIngestionValues = { chunkSize: "450", chunkOverlap: "60", similarityThreshold: "0.25" };
 type LlmTemperatures = { extraction: number; answer: number; summary: number; creative: number };
 type ModelCapabilities = { provider: string; model: string; inputTokenLimit: number | null; outputTokenLimit: number | null; runtimeContextLimit?: number | null; supportsTokenCounting: boolean; source: string; discoveredAt: string; warning?: string };
+type SmallModelMetrics = Record<"entityLinker" | "reranker" | "fieldMatcher", { attempts: number; successes: number; fallbacks: number; accepted: number }>;
 const defaultLlmTemperatures: LlmTemperatures = { extraction: 0.1, answer: 0.3, summary: 0.3, creative: 0.7 };
 
 export function SettingsPanel() {
@@ -26,6 +27,10 @@ export function SettingsPanel() {
   const [embeddingModel, setEmbeddingModel] = useState("");
   const [llmProvider, setLlmProvider] = useState("ollama");
   const [embeddingProvider, setEmbeddingProvider] = useState("ollama");
+  const [entityLinkerModel, setEntityLinkerModel] = useState("");
+  const [rerankerModel, setRerankerModel] = useState("");
+  const [fieldMatcherModel, setFieldMatcherModel] = useState("");
+  const [smallModelMetrics, setSmallModelMetrics] = useState<SmallModelMetrics | null>(null);
   const [llmTemperatures, setLlmTemperatures] = useState<LlmTemperatures>(defaultLlmTemperatures);
   const [ragSoftInputTokens, setRagSoftInputTokens] = useState("0");
   const [ragReservedOutputTokens, setRagReservedOutputTokens] = useState("1024");
@@ -63,11 +68,15 @@ export function SettingsPanel() {
     fetch(`${apiBaseUrl}/api/settings/models`)
       .then(async (response) => {
         if (!response.ok) throw new Error("Model list could not be loaded.");
-        return response.json() as Promise<{ llmModel: string; embeddingModel: string; llmProvider?: string; embeddingProvider?: string; llmTemperatures?: Partial<LlmTemperatures>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number; capabilities?: ModelCapabilities; models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[] }; catalog: Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }> }>;
+        return response.json() as Promise<{ llmModel: string; embeddingModel: string; entityLinkerModel: string; rerankerModel: string; fieldMatcherModel: string; smallModelMetrics?: SmallModelMetrics; llmProvider?: string; embeddingProvider?: string; llmTemperatures?: Partial<LlmTemperatures>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number; capabilities?: ModelCapabilities; models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[] }; catalog: Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }> }>;
       })
       .then((settings) => {
         setLlmModel(settings.llmModel);
         setEmbeddingModel(settings.embeddingModel);
+        setEntityLinkerModel(settings.entityLinkerModel);
+        setRerankerModel(settings.rerankerModel);
+        setFieldMatcherModel(settings.fieldMatcherModel);
+        setSmallModelMetrics(settings.smallModelMetrics ?? null);
         setModels(settings.models);
         setCatalog(settings.catalog);
         setLlmProvider(settings.llmProvider ?? "ollama");
@@ -138,7 +147,7 @@ export function SettingsPanel() {
       return;
     }
 
-    if (!llmModel || !embeddingModel) return;
+    if (!llmModel || !embeddingModel || !entityLinkerModel || !rerankerModel || !fieldMatcherModel) return;
     const softInputTokens = Number(ragSoftInputTokens);
     const reservedOutputTokens = Number(ragReservedOutputTokens);
     if (!Number.isInteger(softInputTokens) || softInputTokens < 0 || !Number.isInteger(reservedOutputTokens) || reservedOutputTokens < 256) {
@@ -148,7 +157,7 @@ export function SettingsPanel() {
     const response = await fetch(`${apiBaseUrl}/api/settings/models`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ llmModel, embeddingModel, llmProvider, embeddingProvider, ragSoftInputTokens: softInputTokens, ragReservedOutputTokens: reservedOutputTokens, llmTemperatures: Object.fromEntries(Object.entries(llmTemperatures).map(([profile, temperature]) => [profile, Number(temperature)])) })
+      body: JSON.stringify({ llmModel, embeddingModel, entityLinkerModel, rerankerModel, fieldMatcherModel, llmProvider, embeddingProvider, ragSoftInputTokens: softInputTokens, ragReservedOutputTokens: reservedOutputTokens, llmTemperatures: Object.fromEntries(Object.entries(llmTemperatures).map(([profile, temperature]) => [profile, Number(temperature)])) })
     });
     if (!response.ok) {
       setMessage(language === "tr" ? "Model ayarları kaydedilemedi." : "Model settings could not be saved.");
@@ -295,14 +304,23 @@ export function SettingsPanel() {
     setLlmProvider(provider);
     setApiKey("");
     const options = provider === "ollama" ? installedLlmOptions : cloudModels[provider as "openai" | "gemini" | "anthropic"].llmModels;
-    if (options[0]) setLlmModel(typeof options[0] === "string" ? options[0] : options[0].value);
+    if (options[0]) {
+      const model = typeof options[0] === "string" ? options[0] : options[0].value;
+      setLlmModel(model);
+      setEntityLinkerModel(model);
+      setRerankerModel(model);
+    }
   }
 
   function selectEmbeddingProvider(provider: string) {
     setEmbeddingProvider(provider);
     setApiKey("");
     const options = provider === "ollama" ? installedEmbeddingOptions : cloudModels[provider as "openai" | "gemini"].embeddingModels;
-    if (options[0]) setEmbeddingModel(typeof options[0] === "string" ? options[0] : options[0].value);
+    if (options[0]) {
+      const model = typeof options[0] === "string" ? options[0] : options[0].value;
+      setEmbeddingModel(model);
+      setFieldMatcherModel(model);
+    }
   }
 
   const installedLlmOptions = models
@@ -322,7 +340,8 @@ export function SettingsPanel() {
     { label: language === "tr" ? "Genel" : "General", icon: "pi pi-cog" },
     { label: "LLM", icon: "pi pi-sparkles" },
     { label: "Embedding", icon: "pi pi-search" },
-    { label: language === "tr" ? "İndeksleme ve arama" : "Ingestion & search", icon: "pi pi-sliders-h" }
+    { label: language === "tr" ? "İndeksleme ve arama" : "Ingestion & search", icon: "pi pi-sliders-h" },
+    { label: language === "tr" ? "Küçük modeller" : "Small models", icon: "pi pi-bolt" }
   ];
 
   return (
@@ -473,6 +492,39 @@ export function SettingsPanel() {
           <ADropdown value={embeddingProvider} options={embeddingProviderOptions} onChange={(event) => selectEmbeddingProvider(String(event.value))} />
         </label> : null}
 
+        {activeTab === 4 ? <div className="settings-temperature-profiles">
+          <label>
+            <span className="label-with-info">
+              {language === "tr" ? "Chunk entity linker modeli" : "Chunk entity linker model"}
+              <AInfo description={language === "tr" ? "Exact ve alias eşleşmesinin kaçırdığı OCR, çekim ve yazım varyantlarını yalnız mevcut entity adaylarına bağlar. Yeni entity oluşturamaz." : "Links OCR, inflection, and spelling variants missed by exact matching only to existing entity candidates. It cannot create entities."} position="right" />
+            </span>
+            <ADropdown value={entityLinkerModel} options={llmOptions} disabled={loading} onChange={(event) => setEntityLinkerModel(String(event.value))} />
+          </label>
+          <label>
+            <span className="label-with-info">
+              {language === "tr" ? "Retrieval reranker modeli" : "Retrieval reranker model"}
+              <AInfo description={language === "tr" ? "RRF sonrasında en fazla 12 aday chunk'ı sorguya göre sıralar. Hata halinde lexical reranker kullanılır." : "Ranks at most 12 candidate chunks after RRF. Falls back to the lexical reranker on failure."} position="right" />
+            </span>
+            <ADropdown value={rerankerModel} options={llmOptions} disabled={loading} onChange={(event) => setRerankerModel(String(event.value))} />
+          </label>
+          <label>
+            <span className="label-with-info">
+              {language === "tr" ? "Metadata field matcher modeli" : "Metadata field matcher model"}
+              <AInfo description={language === "tr" ? "Yeni metadata key için semantik olarak benzer workspace field adaylarını üretir. Tip, eşik ve margin doğrulaması deterministiktir." : "Produces semantically similar workspace field candidates for new metadata keys. Type, threshold, and margin validation remains deterministic."} position="right" />
+            </span>
+            <ADropdown value={fieldMatcherModel} options={embeddingOptions} disabled={loading} onChange={(event) => setFieldMatcherModel(String(event.value))} />
+          </label>
+          <p className="settings-note">
+            {language === "tr" ? "Entity linker değişikliği için yeniden indeksleme gerekir. Reranker hemen uygulanır. Field matcher yalnız bundan sonraki metadata üretimlerinde kullanılır." : "Entity linker changes require reindexing. The reranker applies immediately. The field matcher is used for future metadata generation only."}
+          </p>
+          {smallModelMetrics ? <div className="settings-note">
+            <strong>{language === "tr" ? "Çalışma zamanı metrikleri" : "Runtime metrics"}</strong>
+            <p>Entity linker: {smallModelMetrics.entityLinker.successes}/{smallModelMetrics.entityLinker.attempts} · fallback {smallModelMetrics.entityLinker.fallbacks} · accepted {smallModelMetrics.entityLinker.accepted}</p>
+            <p>Reranker: {smallModelMetrics.reranker.successes}/{smallModelMetrics.reranker.attempts} · fallback {smallModelMetrics.reranker.fallbacks} · accepted {smallModelMetrics.reranker.accepted}</p>
+            <p>Field matcher: {smallModelMetrics.fieldMatcher.successes}/{smallModelMetrics.fieldMatcher.attempts} · fallback {smallModelMetrics.fieldMatcher.fallbacks} · accepted {smallModelMetrics.fieldMatcher.accepted}</p>
+          </div> : null}
+        </div> : null}
+
         {activeTab === 2 && embeddingProvider !== "ollama" ? <div className="settings-api-key"><AInput type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={cloudModels[embeddingProvider as "openai" | "gemini"].configured ? "••••••••••••••••" : `${embeddingProvider === "openai" ? "OpenAI" : "Gemini"} API key`} /><AButton onClick={() => void saveApiKey(embeddingProvider as "openai" | "gemini")} disabled={savingApiKey || !apiKey.trim()}>{cloudModels[embeddingProvider as "openai" | "gemini"].configured ? (language === "tr" ? "Güncelle" : "Update") : language === "tr" ? "Ekle" : "Add"}</AButton></div> : null}
 
         {activeTab === 2 ? <label>
@@ -493,7 +545,7 @@ export function SettingsPanel() {
         {activeTab === 1 ? <AButton type="button" tone="secondary" onClick={resetLlmTemperatureProfiles} disabled={loading}>
           {language === "tr" ? "Sıfırla" : "Reset"}
         </AButton> : null}
-        <AButton type="button" onClick={saveSettings} disabled={loading || ((activeTab === 1 || activeTab === 2) && (!llmModel || !embeddingModel))}>
+        <AButton type="button" onClick={saveSettings} disabled={loading || ((activeTab === 1 || activeTab === 2 || activeTab === 4) && (!llmModel || !embeddingModel || !entityLinkerModel || !rerankerModel || !fieldMatcherModel))}>
           {language === "tr" ? "Kaydet" : "Save changes"}
         </AButton>
       </div>

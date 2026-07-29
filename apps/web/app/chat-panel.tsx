@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { Fragment, useEffect, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import type { ChatProgress } from "@knowledgeos/shared";
 import { ADialog, AButton, AIcon, ATextarea } from "../components/ui";
+import { ChatProgressDialog } from "./chat-progress-dialog";
 import { useLanguage } from "./language-context";
 import { useWorkspace } from "./workspace-context";
 
@@ -13,12 +15,18 @@ type ChatSource = {
   title: string;
   evidenceSnippet: string;
   matchedAliases?: string[];
-  sourceType?: "ENTITY" | "SEMANTIC";
+  sourceType?: "ENTITY" | "SEMANTIC" | "LEXICAL" | "DATABASE";
   score?: number;
 };
 
 type ChatResponse = {
   queryType: string;
+  analysis?: { intent?: string };
+  executionPlan?: {
+    strategy: string;
+    requiresLlmAnswer: boolean;
+    nodes: Array<{ id: string; op: string; dependsOn: string[] }>;
+  };
   answer: string;
   sources: ChatSource[];
   sessionId: string;
@@ -32,6 +40,15 @@ type ChatSession = {
   id: string;
   title: string;
   messages: ConversationItem[];
+};
+
+type ChatSessionPage = {
+  sessions: ChatSession[];
+  pagination: {
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
 };
 
 const suggestions = [
@@ -55,6 +72,40 @@ function formatMessageTimestamp(value: string, isEnglish: boolean) {
   }).format(date);
 }
 
+function renderInlineMarkdown(value: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|https?:\/\/[^\s<]+)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value))) {
+    if (match.index > cursor) nodes.push(value.slice(cursor, match.index));
+    const token = match[0];
+    if (token.startsWith("**")) nodes.push(<strong key={`${match.index}-strong`}>{token.slice(2, -2)}</strong>);
+    else if (token.startsWith("`")) nodes.push(<code key={`${match.index}-code`}>{token.slice(1, -1)}</code>);
+    else if (token.startsWith("*")) nodes.push(<em key={`${match.index}-em`}>{token.slice(1, -1)}</em>);
+    else nodes.push(<a key={`${match.index}-link`} href={token} target="_blank" rel="noreferrer">{token}</a>);
+    cursor = match.index + token.length;
+  }
+  if (cursor < value.length) nodes.push(value.slice(cursor));
+  return nodes;
+}
+
+function renderMarkdown(value: string) {
+  const blocks = value.trim().split(/\n{2,}/).filter(Boolean);
+  return blocks.map((block, blockIndex) => {
+    const lines = block.split("\n");
+    const unordered = lines.every((line) => /^\s*[-*]\s+/.test(line));
+    const ordered = lines.every((line) => /^\s*\d+[.)]\s+/.test(line));
+    if (unordered || ordered) {
+      const List = unordered ? "ul" : "ol";
+      return <List key={`list-${blockIndex}`}>{lines.map((line, lineIndex) => <li key={`item-${lineIndex}`}>{renderInlineMarkdown(line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, ""))}</li>)}</List>;
+    }
+    const heading = lines.length === 1 ? lines[0].match(/^#{1,3}\s+(.+)$/) : null;
+    if (heading) return <h3 key={`heading-${blockIndex}`}>{renderInlineMarkdown(heading[1])}</h3>;
+    return <p key={`paragraph-${blockIndex}`}>{lines.map((line, lineIndex) => <Fragment key={`line-${lineIndex}`}>{lineIndex > 0 ? <br /> : null}{renderInlineMarkdown(line)}</Fragment>)}</p>;
+  });
+}
+
 export function ChatPanel() {
   const { language } = useLanguage();
   const isEnglish = language === "en";
@@ -65,8 +116,12 @@ export function ChatPanel() {
   const [sessions, setSessions] = useState<ChatSession[]>([{ id: `local:${crypto.randomUUID()}`, title: language === "en" ? "New chat" : "Yeni sohbet", messages: [] }]);
   const [activeSessionId, setActiveSessionId] = useState(() => sessions[0].id);
   const [status, setStatus] = useState("");
+  const [progressEvents, setProgressEvents] = useState<ChatProgress[]>([]);
+  const [progressVisible, setProgressVisible] = useState(false);
+  const [progressComplete, setProgressComplete] = useState(false);
   const [pendingDeletion, setPendingDeletion] = useState<ChatSession | null>(null);
-  const [isSending, setIsSending] = useState(false);
+  const [sendingSessionId, setSendingSessionId] = useState<string | null>(null);
+  const isSending = sendingSessionId !== null;
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [answerLength, setAnswerLength] = useState<"normal" | "detailed">("normal");
   const [systemPromptVisible, setSystemPromptVisible] = useState(false);
@@ -87,9 +142,9 @@ export function ChatPanel() {
 
     async function loadHistory() {
       try {
-        const result = await fetch(`${apiBaseUrl}/api/chat/sessions?workspaceSlug=${encodeURIComponent(workspaceSlug)}`);
+        const result = await fetch(`${apiBaseUrl}/api/chat/sessions?workspaceSlug=${encodeURIComponent(workspaceSlug)}&limit=50&offset=0`);
         if (!result.ok) return;
-        const storedSessions = await result.json() as ChatSession[];
+        const { sessions: storedSessions } = await result.json() as ChatSessionPage;
         const uniqueSessions = Array.from(
           new Map(storedSessions.map((session) => [session.id, session])).values()
         );
@@ -205,7 +260,10 @@ export function ChatPanel() {
     } : session));
     setMessage("");
     setStatus("");
-    setIsSending(true);
+    setProgressEvents([]);
+    setProgressComplete(false);
+    setProgressVisible(true);
+    setSendingSessionId(sessionId);
 
     try {
       const result = await fetch(`${apiBaseUrl}/api/chat`, {
@@ -243,8 +301,17 @@ export function ChatPanel() {
           const name = event.match(/^event: (.+)$/m)?.[1];
           const data = event.match(/^data: (.+)$/m)?.[1];
           if (!name || !data) continue;
-          const payload = JSON.parse(data) as ChatResponse | string;
+          const payload = JSON.parse(data) as ChatResponse | ChatProgress | string;
           if (name === "status") setStatus(payload as string);
+          if (name === "progress") {
+            const progress = payload as ChatProgress;
+            setProgressEvents((current) => {
+              const previous = current.at(-1);
+              return previous?.stage === progress.stage
+                ? [...current.slice(0, -1), { ...previous, ...progress }]
+                : [...current, progress];
+            });
+          }
           if (name === "meta") { sourceResponse = payload as ChatResponse; addAssistant(sourceResponse); }
           if (name === "token") { streamed += payload as string; append(payload as string); }
           if (name === "error") setStatus(payload as string);
@@ -254,6 +321,7 @@ export function ChatPanel() {
             setSessions((items) => items.map((session) => session.id === sessionId ? { ...session, id: response.sessionId } : session));
             setActiveSessionId((current) => current === sessionId ? response.sessionId : current);
             setStatus("");
+            setProgressComplete(true);
           }
         }
         if (done) break;
@@ -276,7 +344,7 @@ export function ChatPanel() {
     } catch (error) {
       setStatus(isEnglish ? "The server could not be reached. Make sure the API service is running." : "Sunucuya ulaşılamadı. API servisinin çalıştığından emin olun.");
     } finally {
-      setIsSending(false);
+      setSendingSessionId(null);
     }
   }
 
@@ -367,7 +435,7 @@ export function ChatPanel() {
                     <strong>{item.role === "user" ? (isEnglish ? "You" : "Siz") : "KnowledgeOS"}</strong>
                     <time dateTime={item.createdAt}>{formatMessageTimestamp(item.createdAt, isEnglish)}</time>
                   </div>
-                  <p>{item.content}</p>
+                  <div className="chat-message__answer">{renderMarkdown(item.content)}</div>
                   {item.role === "assistant" && item.sources.length > 0 ? (
                     <details className="chat-sources">
                       <summary><span className="pi pi-book" aria-hidden="true" /> {item.sources.length} {isEnglish ? "sources used" : "kaynak kullanıldı"}</summary>
@@ -384,7 +452,7 @@ export function ChatPanel() {
                 </div>
               </article>
             ))}
-            {isSending ? <div className="chat-thinking"><span /><span /><span /> {isEnglish ? "Preparing answer" : "Yanıt hazırlanıyor"}</div> : null}
+            {sendingSessionId === activeSessionId ? <div className="chat-thinking"><span /><span /><span /> {status || (isEnglish ? "Preparing answer" : "Yanıt hazırlanıyor")}<button type="button" onClick={() => setProgressVisible(true)}>{isEnglish ? "View flow" : "Akışı göster"}</button></div> : null}
           </div>
         )}
       </div>
@@ -408,7 +476,7 @@ export function ChatPanel() {
             <span className="pi pi-arrow-up" aria-hidden="true" />
           </button>
         </form>
-        {status ? <p className="chat-error">{status}</p> : null}
+        {!isSending && status ? <p className="chat-error">{status}</p> : null}
         {activeModel ? <p className="chat-active-model"><i className="pi pi-sparkles" aria-hidden="true" /> {isEnglish ? "Active model:" : "Aktif model:"} {activeModel}</p> : null}
         <p className="chat-composer__hint">{isEnglish ? "Press Enter to send · Shift + Enter for a new line" : "Enter ile gönderin · Yeni satır için Shift + Enter"}</p>
       </div>
@@ -444,6 +512,12 @@ export function ChatPanel() {
             : `“${pendingDeletion?.title ?? ""}” ve içindeki tüm mesajlar kalıcı olarak silinecek.`}
         </p>
       </ADialog>
+      <ChatProgressDialog
+        visible={progressVisible}
+        onHide={() => setProgressVisible(false)}
+        events={progressEvents}
+        complete={progressComplete}
+      />
     </section>
   );
 }

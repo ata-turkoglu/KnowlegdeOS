@@ -17,7 +17,8 @@ type EntityAlias = {
 type EntityDocument = {
   documentName: string;
   title: string;
-  occurrenceCount: number;
+  mentionCount: number;
+  maxChunkMentions: number;
   confidence: number;
   evidenceSnippet: string;
 };
@@ -25,11 +26,24 @@ type EntityDocument = {
 type EntityItem = {
   id: string;
   workspaceSlug: string;
-  type: string;
+  fieldId: string;
+  fieldKey: string;
+  fieldLabel: string;
   canonicalValue: string;
   aliases: EntityAlias[];
   documents: EntityDocument[];
   updatedAt: string;
+};
+
+type WorkspaceField = {
+  id: string;
+  key: string;
+  label: string;
+  valueType: string;
+  filterable: boolean;
+  entityEnabled: boolean;
+  entityCount: number;
+  documentCount: number;
 };
 
 export function EntitiesPanel() {
@@ -37,6 +51,7 @@ export function EntitiesPanel() {
   const isEnglish = language === "en";
   const { workspaceSlug } = useWorkspace();
   const [entities, setEntities] = useState<EntityItem[]>([]);
+  const [fields, setFields] = useState<WorkspaceField[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState("");
   const [mergeSourceId, setMergeSourceId] = useState("");
   const [mergeTargetId, setMergeTargetId] = useState("");
@@ -49,9 +64,12 @@ export function EntitiesPanel() {
     entities.find((entity) => entity.id === selectedEntityId) ?? entities[0];
 
   const entityOptions = entities.map((entity) => ({
-    label: entity.canonicalValue,
+    label: `${entity.fieldLabel}: ${entity.canonicalValue}`,
     value: entity.id
   }));
+  const mergeTargetOptions = entities.filter((entity) =>
+    !mergeSourceId || entity.fieldId === entities.find((item) => item.id === mergeSourceId)?.fieldId
+  ).map((entity) => ({ label: `${entity.fieldLabel}: ${entity.canonicalValue}`, value: entity.id }));
 
   function updateEntityState(nextEntities: EntityItem[], preferredId = "") {
     setEntities(nextEntities);
@@ -72,12 +90,11 @@ export function EntitiesPanel() {
     setIsLoading(true);
     setMessage("");
 
-    const response = await fetch(
-      `${apiBaseUrl}/api/entities?workspaceSlug=${encodeURIComponent(
-        nextWorkspaceSlug
-      )}`
-    );
-    const body = await response.json();
+    const [response, fieldResponse] = await Promise.all([
+      fetch(`${apiBaseUrl}/api/entities?workspaceSlug=${encodeURIComponent(nextWorkspaceSlug)}`),
+      fetch(`${apiBaseUrl}/api/workspaces/${encodeURIComponent(nextWorkspaceSlug)}/fields`)
+    ]);
+    const [body, fieldBody] = await Promise.all([response.json(), fieldResponse.json()]);
 
     setIsLoading(false);
 
@@ -87,6 +104,7 @@ export function EntitiesPanel() {
     }
 
     updateEntityState(body);
+    if (fieldResponse.ok) setFields(fieldBody);
     setMessage("");
   }
 
@@ -260,7 +278,7 @@ export function EntitiesPanel() {
               className={entity.id === selectedEntity?.id ? "entity-card active" : "entity-card"}
               onClick={() => setSelectedEntityId(entity.id)}
             >
-              <span>{entity.type}</span>
+              <span>{entity.fieldLabel}</span>
               <strong>{entity.canonicalValue}</strong>
               <small>
                 {entity.aliases.length} {isEnglish ? "aliases" : "takma ad"} · {entity.documents.length} {isEnglish ? "documents" : "belge"}
@@ -273,7 +291,7 @@ export function EntitiesPanel() {
           {selectedEntity ? (
             <>
               <div className="entity-heading">
-                <span>{selectedEntity.type}</span>
+                <span>{selectedEntity.fieldLabel}</span>
                 <strong>{selectedEntity.canonicalValue}</strong>
               </div>
 
@@ -317,7 +335,7 @@ export function EntitiesPanel() {
                   <article key={document.documentName}>
                     <strong>{document.documentName}</strong>
                     <span>
-                      {document.title} · {document.occurrenceCount} {isEnglish ? "records" : "kayıt"}
+                      {document.title} · {document.mentionCount} {isEnglish ? "mentions" : "geçiş"} · {isEnglish ? "peak" : "en yoğun chunk"} {document.maxChunkMentions}
                     </span>
                     <p>{document.evidenceSnippet}</p>
                   </article>
@@ -348,7 +366,7 @@ export function EntitiesPanel() {
           {isEnglish ? "Target" : "Hedef"}
           <ADropdown
             value={mergeTargetId}
-            options={entityOptions}
+            options={mergeTargetOptions}
             onChange={(event) => setMergeTargetId(event.value)}
             placeholder={isEnglish ? "Target entity" : "Hedef varlık"}
           />
@@ -365,6 +383,18 @@ export function EntitiesPanel() {
         >
           {activeAction === "merge" ? (isEnglish ? "Merging..." : "Birleştiriliyor...") : isEnglish ? "Merge" : "Birleştir"}
         </AButton>
+      </div>
+
+      <div className="merge-panel">
+        <div>
+          <p className="eyebrow">{isEnglish ? "Metadata catalog" : "Metadata kataloğu"}</p>
+          <strong>{fields.length} {isEnglish ? "dynamic fields" : "dinamik alan"}</strong>
+        </div>
+        {fields.map((field) => (
+          <span key={field.id}>
+            {field.label} · {field.valueType} · {field.entityCount} {isEnglish ? "entities" : "varlık"} · {field.documentCount} {isEnglish ? "documents" : "belge"}
+          </span>
+        ))}
       </div>
 
       {message ? <p className="form-message">{message}</p> : null}
