@@ -1,8 +1,56 @@
 import { normalizeForSearch } from "@knowledgeos/ingestion";
 import type { QueryType } from "@knowledgeos/shared";
 
-export type MetadataFilters = { year?: string; date?: string; documentType?: string; metadata?: Record<string, string>; workspace?: string };
+export type MetadataFilters = {
+  year?: string;
+  date?: string;
+  documentType?: string;
+  metadata?: Record<string, string>;
+  workspace?: string;
+  allowedDocumentIds?: string[];
+};
 export type RetrievalCandidate = { documentId: string; chunkId: string; chunkIndex: number; documentName: string; title: string; heading: string | null; content?: string; evidenceSnippet: string; sourceType: "ENTITY" | "SEMANTIC" | "LEXICAL"; score: number; retrievers?: string[] };
+export type LabeledNumericAnchor = { label: "ada" | "pafta" | "parsel"; value: string };
+
+/** Pafta/parsel gibi kısa fakat ayırt edici taşınmaz kimliklerini sorgudan kayıpsız çıkarır. */
+export function extractLabeledNumericAnchors(query: string): LabeledNumericAnchor[] {
+  const normalized = normalizeForSearch(query);
+  const anchors: LabeledNumericAnchor[] = [];
+  for (const label of ["ada", "pafta", "parsel"] as const) {
+    const valueBeforeLabel = [...normalized.matchAll(new RegExp(`\\b(\\d+(?:[/-]\\d+)?)\\s+${label}\\b`, "gu"))];
+    const matches = valueBeforeLabel.length
+      ? valueBeforeLabel
+      : [...normalized.matchAll(new RegExp(`\\b${label}(?:\\s+no)?\\s+(\\d+(?:[/-]\\d+)?)\\b`, "gu"))];
+    for (const match of matches) anchors.push({ label, value: match[1] });
+  }
+  return [...new Map(anchors.map((anchor) => [`${anchor.label}:${anchor.value}`, anchor])).values()];
+}
+
+export function evidenceMatchesLabeledAnchors(evidence: string, anchors: LabeledNumericAnchor[]) {
+  if (!anchors.length) return true;
+  const normalized = ` ${normalizeForSearch(evidence)} `;
+  return anchors.every(({ label, value }) =>
+    normalized.includes(` ${value} ${label} `)
+    || normalized.includes(` ${label} ${value} `)
+    || normalized.includes(` ${label} no ${value} `)
+  );
+}
+
+/**
+ * Kesin pafta/parsel kimliklerinin tamamını aynı parçada taşıyan adayları öne alır.
+ * Diğer adaylar korunur; böylece genel RAG yapısı ve geri dönüş davranışı değişmez.
+ */
+export function prioritizeCandidatesByQueryAnchors(query: string, candidates: RetrievalCandidate[]) {
+  const anchors = extractLabeledNumericAnchors(query);
+  if (!anchors.length) return candidates;
+  const matching: RetrievalCandidate[] = [];
+  const remaining: RetrievalCandidate[] = [];
+  for (const candidate of candidates) {
+    const evidence = candidate.content ?? candidate.evidenceSnippet;
+    (evidenceMatchesLabeledAnchors(evidence, anchors) ? matching : remaining).push(candidate);
+  }
+  return matching.length ? [...matching, ...remaining] : candidates;
+}
 
 export function extractMetadataFilters(query: string): MetadataFilters {
   const date = query.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1];
@@ -39,6 +87,47 @@ export function validateCitations(answer: string, sourceCount: number, answerabl
 }
 
 export function lockedQueryValues(query: string) { return normalizeForSearch(query).match(/\b\d{4}(?:[-/]\d{2}(?:[-/]\d{2})?)?\b|\b\d+[\/]?\d*\b/g) ?? []; }
+
+const citationStopWords = new Set(["acik", "ad", "ama", "ancak", "bir", "bu", "cin", "cok", "daha", "de", "degil", "den", "gibi", "hem", "icin", "ile", "ise", "kadar", "ki", "mi", "mu", "musu", "ne", "olan", "olarak", "orta", "sonra", "sadece", "su", "tarafindan", "tum", "uzere", "var", "ve", "veya", "ya", "yani"]);
+
+/** Her citation grubunun, kendisinden önceki iddiayı gerçekten destekleyen kaynaklara işaret ettiğini denetler. */
+export function validateCitationEvidence(answer: string, evidence: string[]) {
+  const groups = [...answer.matchAll(/(?:\[\d+\](?:\s*[,;]\s*)?)+/g)];
+  if (!groups.length) return { valid: true, errors: [] as string[] };
+  const errors: string[] = [];
+  let cursor = 0;
+  for (const group of groups) {
+    const claim = answer.slice(cursor, group.index).trim();
+    const citations = [...group[0].matchAll(/\[(\d+)\]/g)].map((match) => Number(match[1]));
+    if (hasVerifiableClaim(claim)) {
+      for (const citation of citations) {
+        const source = evidence[citation - 1];
+        if (source && !sourceSupportsClaim(source, claim)) errors.push(`citation_evidence_mismatch:${citation}`);
+      }
+    }
+    cursor = (group.index ?? 0) + group[0].length;
+  }
+  if (hasVerifiableClaim(answer.slice(cursor))) errors.push("uncited_claim");
+  return { valid: errors.length === 0, errors };
+}
+
+function hasVerifiableClaim(value: string) {
+  return lockedQueryValues(value).length > 0 || meaningfulTerms(value).length > 0;
+}
+
+function sourceSupportsClaim(source: string, claim: string) {
+  const normalizedSource = normalizeForSearch(source);
+  if (lockedQueryValues(claim).some((value) => !normalizedSource.includes(normalizeForSearch(value)))) return false;
+  const claimTerms = meaningfulTerms(claim);
+  if (!claimTerms.length) return true;
+  const sourceTerms = new Set(normalizedSource.split(" "));
+  const overlappingTerms = claimTerms.filter((term) => sourceTerms.has(term)).length;
+  return overlappingTerms >= Math.min(2, Math.ceil(claimTerms.length * .35));
+}
+
+function meaningfulTerms(value: string) {
+  return [...new Set(normalizeForSearch(value).split(" ").filter((term) => term.length >= 3 && !citationStopWords.has(term)))];
+}
 
 export interface Reranker { rerank(input: { query: string; candidates: RetrievalCandidate[]; topK: number }): Promise<RetrievalCandidate[]>; }
 export class NoopReranker implements Reranker { async rerank(input: { query: string; candidates: RetrievalCandidate[]; topK: number }) { return input.candidates.slice(0, input.topK); } }

@@ -23,7 +23,7 @@ test("versioned database-backed RAG fixture meets retrieval and safety threshold
       const [document] = await client.queryClient<{ id: string }[]>`
         insert into documents (workspace_id, filename, title, markdown_path, content, normalized_content, document_type, status, hash)
         values (${workspace.id}, ${item.filename}, ${item.title}, ${`/test/${item.filename}`}, ${item.content}, ${item.normalized}, ${item.type}, 'INDEXED', ${`${suffix}-${item.filename}`}) returning id`;
-      await client.queryClient`insert into document_chunks (document_id, chunk_index, content, normalized_content, token_count) values (${document.id}, 0, ${item.content}, ${item.normalized}, 10)`;
+      await client.queryClient`insert into document_chunks (document_id, chunk_index, content, normalized_content, content_hash, token_count) values (${document.id}, 0, ${item.content}, ${item.normalized}, encode(digest(convert_to(${item.content}, 'UTF8'), 'sha256'), 'hex'), 10)`;
     }
 
     const config = { ...loadConfig(), databaseUrl: url };

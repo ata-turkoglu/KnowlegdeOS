@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { classifyQuery } from "@knowledgeos/search";
-import { extractMetadataFilters, LexicalOverlapReranker, LlmReranker, NoopReranker, reciprocalRankFusion, shouldRetryWithoutMetadata, validateCitations, validateEvidenceValues } from "../../src/services/rag-core.js";
+import { extractLabeledNumericAnchors, extractMetadataFilters, LexicalOverlapReranker, LlmReranker, NoopReranker, prioritizeCandidatesByQueryAnchors, reciprocalRankFusion, shouldRetryWithoutMetadata, validateCitationEvidence, validateCitations, validateEvidenceValues } from "../../src/services/rag-core.js";
 
 const candidate = (chunkId: string, sourceType: "ENTITY" | "SEMANTIC" | "LEXICAL", score = 1) => ({ documentId: "doc", chunkId, chunkIndex: 0, documentName: "belge", title: "Belge", heading: null, evidenceSnippet: "kanıt", sourceType, score });
 
@@ -36,4 +36,22 @@ test("LLM reranker validates IDs and falls back on malformed output", async () =
 test("groundedness guard rejects unsupported numeric values", () => {
   assert.equal(validateEvidenceValues("Parsel 192'dir [1]", ["192 parsel kaydı"]).valid, true);
   assert.deepEqual(validateEvidenceValues("Parsel 999'dur [1]", ["192 parsel kaydı"]).unsupported, ["999"]);
+});
+test("citation evidence validator checks the cited source and rejects uncited claims", () => {
+  assert.equal(validateCitationEvidence("Parsel 192'dir [2]", ["999 parsel kaydı", "192 parsel kaydı"]).valid, true);
+  assert.deepEqual(validateCitationEvidence("Parsel 192'dir [1]", ["999 parsel kaydı", "192 parsel kaydı"]).errors, ["citation_evidence_mismatch:1"]);
+  assert.deepEqual(validateCitationEvidence("Parsel 192'dir [2] Malik Ahmet'tir.", ["999 parsel kaydı", "192 parsel kaydı"]).errors, ["uncited_claim"]);
+});
+
+test("property identifiers preserve short pafta and parsel numbers", () => {
+  assert.deepEqual(extractLabeledNumericAnchors("Kilyos 1 pafta 41 parsel ödemesi"), [
+    { label: "pafta", value: "1" },
+    { label: "parsel", value: "41" }
+  ]);
+});
+
+test("property identifiers promote only evidence containing every identifier", () => {
+  const wrong = { ...candidate("wrong", "SEMANTIC"), content: "Kilyos çekler 14.10.77 250.000" };
+  const right = { ...candidate("right", "LEXICAL"), content: "Sarıyer Kilyos 1 pafta, 41 parsel ödeme kaydı" };
+  assert.deepEqual(prioritizeCandidatesByQueryAnchors("Kilyos 1 pafta 41 parsel", [wrong, right]).map((item) => item.chunkId), ["right", "wrong"]);
 });

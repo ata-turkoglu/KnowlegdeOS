@@ -4,7 +4,7 @@ import type { ApiConfig } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
 import { getEmbeddingProvider, selectedEmbeddingModel } from "./ai-providers.js";
 import { getWorkspaceIngestionSettings } from "./workspace-settings.js";
-import type { MetadataFilters } from "./rag-core.js";
+import { extractLabeledNumericAnchors, type MetadataFilters } from "./rag-core.js";
 import { ragRetrievalCache } from "./rag-cache.js";
 
 export type SemanticSearchResult = { queryType: "SEMANTIC_SEARCH"; query: string; embeddingModel: string; results: Array<{ documentId: string; chunkId: string; documentName: string; title: string; chunkIndex: number; heading: string | null; score: number; snippet: string }>; sources: Array<{ documentName: string; title: string; evidenceSnippet: string; score: number }> };
@@ -34,11 +34,11 @@ export async function getEmbeddingCoverage(config: ApiConfig, workspaceSlugInput
   const model = selectedEmbeddingModel(config);
   return withDb(config, async ({ db }) => {
     const id = await workspaceId(db, slug);
-    const rows = await db.select({ filename: documents.filename, title: documents.title, chunkCount: count(documentChunks.id), embedded: sql<number>`count(${documentChunks.id}) filter (where ${documentChunks.embedding} is not null)` })
+    const rows = await db.select({ filename: documents.filename, title: documents.title, embeddingModel: documents.embeddingModel, chunkCount: count(documentChunks.id), embedded: sql<number>`count(${documentChunks.id}) filter (where ${documentChunks.embedding} is not null)` })
       .from(documents).leftJoin(documentChunks, eq(documentChunks.documentId, documents.id))
-      .where(and(eq(documents.workspaceId, id), eq(documents.status, "INDEXED"), eq(documents.embeddingModel, model)))
+      .where(and(eq(documents.workspaceId, id), eq(documents.status, "INDEXED")))
       .groupBy(documents.id).orderBy(documents.filename);
-    return rows.map((row) => ({ documentName: documentName(row.filename), title: row.title, chunkCount: Number(row.chunkCount), embeddedChunkCount: Number(row.embedded), status: Number(row.chunkCount) > 0 && Number(row.chunkCount) === Number(row.embedded) ? "READY" : "MISSING" }));
+    return rows.map((row) => ({ documentName: documentName(row.filename), title: row.title, chunkCount: Number(row.chunkCount), embeddedChunkCount: Number(row.embedded), status: row.embeddingModel === model && Number(row.chunkCount) > 0 && Number(row.chunkCount) === Number(row.embedded) ? "READY" : "MISSING" }));
   });
 }
 
@@ -50,21 +50,41 @@ export async function embedSelectedDocuments(config: ApiConfig, workspaceSlugInp
     const all = await db.select({ id: documents.id, filename: documents.filename }).from(documents).where(eq(documents.workspaceId, id));
     const selected = all.filter((row) => names.map(slugify).includes(documentName(row.filename)));
     let completed = 0;
+    let reusedChunkCount = 0;
+    let generatedChunkCount = 0;
     for (const document of selected) {
       if (signal?.aborted) throw new Error("Embedding cancelled.");
       onProgress?.({ completed, total: selected.length, documentName: documentName(document.filename) });
       const chunks = await db.select().from(documentChunks).where(eq(documentChunks.documentId, document.id)).orderBy(documentChunks.chunkIndex);
       for (const chunk of chunks) {
         if (signal?.aborted) throw new Error("Embedding cancelled.");
+        if (chunk.embedding && chunk.embeddingModel === model) {
+          reusedChunkCount += 1;
+          continue;
+        }
+        const [reusable] = await db.select({ embedding: documentChunks.embedding })
+          .from(documentChunks)
+          .where(and(
+            eq(documentChunks.contentHash, chunk.contentHash),
+            eq(documentChunks.embeddingModel, model),
+            isNotNull(documentChunks.embedding)
+          ))
+          .limit(1);
+        if (reusable?.embedding) {
+          await db.update(documentChunks).set({ embedding: reusable.embedding, embeddingModel: model }).where(eq(documentChunks.id, chunk.id));
+          reusedChunkCount += 1;
+          continue;
+        }
         const embedding = await provider.embed(chunk.content);
         assertEmbeddingDimensions(embedding);
-        await db.update(documentChunks).set({ embedding }).where(eq(documentChunks.id, chunk.id));
+        await db.update(documentChunks).set({ embedding, embeddingModel: model }).where(eq(documentChunks.id, chunk.id));
+        generatedChunkCount += 1;
       }
       await db.update(documents).set({ embeddingModel: model, updatedAt: new Date() }).where(eq(documents.id, document.id));
       completed += 1; onProgress?.({ completed, total: selected.length, documentName: documentName(document.filename) });
     }
     ragRetrievalCache.invalidateWorkspace(slug);
-    return { workspaceSlug: slug, embeddedDocumentCount: completed };
+    return { workspaceSlug: slug, embeddedDocumentCount: completed, reusedChunkCount, generatedChunkCount };
   });
 }
 
@@ -79,11 +99,13 @@ export async function searchSemanticDocuments(config: ApiConfig, input: { worksp
   assertEmbeddingDimensions(query);
   return withDb(config, async ({ db, queryClient }) => {
     const id = await workspaceId(db, slug); const limit = input.limit ?? settings.semanticTopK;
+    const allowedIds = input.filters?.allowedDocumentIds?.length ? input.filters.allowedDocumentIds : null;
     // postgres.js parameterizes the vector literal; <=> is cosine distance, so score is 1-distance.
     const rows = await queryClient<{ document_id: string; chunk_id: string; filename: string; title: string; chunk_index: number; heading: string | null; content: string; score: number }[]>`
       select d.id as document_id, c.id as chunk_id, d.filename, d.title, c.chunk_index, c.heading, c.content, (1 - (c.embedding <=> ${vectorLiteral(query)}::vector))::float8 as score
       from document_chunks c join documents d on d.id = c.document_id
       where d.workspace_id = ${id} and d.status = 'INDEXED' and d.embedding_model = ${model} and c.embedding is not null
+        and (${allowedIds}::uuid[] is null or d.id = any(${allowedIds}::uuid[]))
         and (${input.filters?.year ?? null}::text is null or extract(year from d.document_date)::text = ${input.filters?.year ?? null})
         and (${input.filters?.date ?? null}::date is null or d.document_date = ${input.filters?.date ?? null}::date)
         and (${input.filters?.documentType ?? null}::text is null or d.document_type ilike ${input.filters?.documentType ? `%${input.filters.documentType}%` : null})
@@ -96,23 +118,54 @@ export async function searchSemanticDocuments(config: ApiConfig, input: { worksp
 export async function getSemanticContext(config: ApiConfig, workspaceSlug: string, results: SemanticSearchResult["results"]): Promise<SemanticContextChunk[]> {
   if (!results.length) return [];
   const scores = new Map(results.map((result) => [result.chunkId, result.score]));
-  return withDb(config, async ({ db }) => { const id = await workspaceId(db, slugify(workspaceSlug)); const rows = await db.select({ documentId: documents.id, chunkId: documentChunks.id, filename: documents.filename, title: documents.title, chunkIndex: documentChunks.chunkIndex, heading: documentChunks.heading, content: documentChunks.content }).from(documentChunks).innerJoin(documents, eq(documents.id, documentChunks.documentId)).where(and(eq(documents.workspaceId, id), inArray(documentChunks.id, results.map((result) => result.chunkId)))); return rows.map((row) => ({ ...row, documentName: documentName(row.filename), sourceType: "SEMANTIC" as const, score: scores.get(row.chunkId) ?? 0 })); });
+  return withDb(config, async ({ db }) => {
+    const id = await workspaceId(db, slugify(workspaceSlug));
+    const rows = await db.select({ documentId: documents.id, chunkId: documentChunks.id, filename: documents.filename, title: documents.title, chunkIndex: documentChunks.chunkIndex, heading: documentChunks.heading, content: documentChunks.content })
+      .from(documentChunks).innerJoin(documents, eq(documents.id, documentChunks.documentId))
+      .where(and(eq(documents.workspaceId, id), inArray(documentChunks.id, results.map((result) => result.chunkId))));
+    const byChunkId = new Map(rows.map((row) => [row.chunkId, row]));
+    // SQL IN sorgusu sıralama garantisi vermez; vektör aramasının benzerlik sırası korunur.
+    return results.flatMap((result) => {
+      const row = byChunkId.get(result.chunkId);
+      return row ? [{ ...row, documentName: documentName(row.filename), sourceType: "SEMANTIC" as const, score: scores.get(row.chunkId) ?? 0 }] : [];
+    });
+  });
 }
 
 export async function getLexicalSemanticContext(config: ApiConfig, workspaceSlug: string, query: string, limit = 4, filters?: MetadataFilters): Promise<SemanticContextChunk[]> {
   const terms = [...new Set(query.toLocaleLowerCase("tr-TR").match(/[\p{L}\p{N}]{3,}/gu) ?? [])]; if (!terms.length) return [];
   return withDb(config, async ({ db, queryClient }) => {
     const id = await workspaceId(db, slugify(workspaceSlug)); const phrase = terms.join(" ");
-    const rows = await queryClient<{ document_id: string; chunk_id: string; filename: string; title: string; chunk_index: number; heading: string | null; content: string; score: number }[]>`
+    const allowedIds = filters?.allowedDocumentIds?.length ? filters.allowedDocumentIds : null;
+    type LexicalRow = { document_id: string; chunk_id: string; filename: string; title: string; chunk_index: number; heading: string | null; content: string; score: number };
+    const rows = await queryClient<LexicalRow[]>`
       select d.id as document_id, c.id as chunk_id, d.filename, d.title, c.chunk_index, c.heading, c.content, ts_rank_cd(to_tsvector('simple', c.normalized_content), websearch_to_tsquery('simple', ${phrase}))::float8 as score
       from document_chunks c join documents d on d.id = c.document_id
       where d.workspace_id = ${id} and d.status = 'INDEXED'
+        and (${allowedIds}::uuid[] is null or d.id = any(${allowedIds}::uuid[]))
         and (${filters?.year ?? null}::text is null or extract(year from d.document_date)::text = ${filters?.year ?? null})
         and (${filters?.date ?? null}::date is null or d.document_date = ${filters?.date ?? null}::date)
         and (${filters?.documentType ?? null}::text is null or d.document_type ilike ${filters?.documentType ? `%${filters.documentType}%` : null})
         and to_tsvector('simple', c.normalized_content) @@ websearch_to_tsquery('simple', ${phrase})
       order by ts_rank_cd(to_tsvector('simple', c.normalized_content), websearch_to_tsquery('simple', ${phrase})) desc, c.chunk_index asc limit ${limit}`;
-    return rows.map((row) => ({ documentId: row.document_id, chunkId: row.chunk_id, documentName: documentName(row.filename), title: row.title, chunkIndex: row.chunk_index, heading: row.heading, content: row.content, sourceType: "LEXICAL" as const, score: Number(row.score) }));
+    const anchorMap = new Map(extractLabeledNumericAnchors(query).map((anchor) => [anchor.label, anchor.value]));
+    const pafta = anchorMap.get("pafta") ?? null;
+    const ada = anchorMap.get("ada") ?? null;
+    const parsel = anchorMap.get("parsel") ?? null;
+    const anchorRows = pafta || ada || parsel ? await queryClient<LexicalRow[]>`
+      select d.id as document_id, c.id as chunk_id, d.filename, d.title, c.chunk_index, c.heading, c.content, 1::float8 as score
+      from document_chunks c join documents d on d.id = c.document_id
+      where d.workspace_id = ${id} and d.status = 'INDEXED'
+        and (${allowedIds}::uuid[] is null or d.id = any(${allowedIds}::uuid[]))
+        and (${filters?.year ?? null}::text is null or extract(year from d.document_date)::text = ${filters?.year ?? null})
+        and (${filters?.date ?? null}::date is null or d.document_date = ${filters?.date ?? null}::date)
+        and (${filters?.documentType ?? null}::text is null or d.document_type ilike ${filters?.documentType ? `%${filters.documentType}%` : null})
+        and (${pafta}::text is null or c.normalized_content ~ ${pafta ? `(^| )(${pafta} pafta|pafta( no)? ${pafta})( |$)` : null})
+        and (${ada}::text is null or c.normalized_content ~ ${ada ? `(^| )(${ada} ada|ada( no)? ${ada})( |$)` : null})
+        and (${parsel}::text is null or c.normalized_content ~ ${parsel ? `(^| )(${parsel} parsel|parsel( no)? ${parsel})( |$)` : null})
+      order by d.filename asc, c.chunk_index asc limit ${limit}` : [];
+    const merged = [...anchorRows, ...rows].filter((row, index, all) => all.findIndex((candidate) => candidate.chunk_id === row.chunk_id) === index).slice(0, limit);
+    return merged.map((row) => ({ documentId: row.document_id, chunkId: row.chunk_id, documentName: documentName(row.filename), title: row.title, chunkIndex: row.chunk_index, heading: row.heading, content: row.content, sourceType: "LEXICAL" as const, score: Number(row.score) }));
   });
 }
 

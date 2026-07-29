@@ -7,6 +7,9 @@ import {
   searchSemanticDocuments
 } from "../services/semantic-search.js";
 import { searchEntityDocuments } from "../services/search.js";
+import { analyzeQuery } from "../services/query-analyzer.js";
+import { prepareQueryExecution } from "../services/execution-planner.js";
+import { listExecutionTelemetry } from "../services/execution-telemetry.js";
 
 function handleError(reply: FastifyReply, error: unknown) {
   if (isHttpError(error)) {
@@ -21,6 +24,17 @@ function handleError(reply: FastifyReply, error: unknown) {
 }
 
 export async function registerSearchRoutes(app: FastifyInstance, config: ApiConfig) {
+  app.get<{
+    Params: { workspaceSlug: string };
+    Querystring: { limit?: number };
+  }>("/api/workspaces/:workspaceSlug/query-executions", async (request, reply) => {
+    try {
+      return await listExecutionTelemetry(config, request.params.workspaceSlug, request.query.limit);
+    } catch (error) {
+      return handleError(reply, error);
+    }
+  });
+
   app.post<{
     Body: {
       workspaceSlug?: string;
@@ -36,10 +50,17 @@ export async function registerSearchRoutes(app: FastifyInstance, config: ApiConf
         });
       }
 
-      return await searchEntityDocuments(config, {
-        workspaceSlug: request.body?.workspaceSlug || "merter-arsivi",
-        query
+      const workspaceSlug = request.body?.workspaceSlug || "merter-arsivi";
+      const analysis = await analyzeQuery(config, { workspaceSlug, query });
+      const planning = await prepareQueryExecution(config, workspaceSlug, { ...analysis, queryType: "ENTITY_SEARCH", intent: "FIND" });
+      const allowedDocumentIds = planning.documentIds;
+      const result = await searchEntityDocuments(config, {
+        workspaceSlug,
+        query,
+        entityIds: analysis.matchedEntityIds,
+        filters: { allowedDocumentIds }
       });
+      return { ...result, analysis, executionPlan: planning.plan };
     } catch (error) {
       return handleError(reply, error);
     }
@@ -61,11 +82,17 @@ export async function registerSearchRoutes(app: FastifyInstance, config: ApiConf
         });
       }
 
-      return await searchSemanticDocuments(config, {
-        workspaceSlug: request.body?.workspaceSlug || "merter-arsivi",
+      const workspaceSlug = request.body?.workspaceSlug || "merter-arsivi";
+      const analysis = await analyzeQuery(config, { workspaceSlug, query });
+      const planning = await prepareQueryExecution(config, workspaceSlug, { ...analysis, queryType: "SEMANTIC_SEARCH", intent: "FIND" }, request.body?.limit);
+      const allowedDocumentIds = planning.documentIds;
+      const result = await searchSemanticDocuments(config, {
+        workspaceSlug,
         query,
-        limit: request.body?.limit
+        limit: request.body?.limit,
+        filters: { allowedDocumentIds }
       });
+      return { ...result, analysis, executionPlan: planning.plan };
     } catch (error) {
       return handleError(reply, error);
     }

@@ -16,44 +16,7 @@ document_code and source_original are system supplied. Copy them exactly; do not
 document_code: "<system value>"
 source_original: "<system value>"
 
-Return this exact JSON object shape:
-{
-  "title":"",
-  "language":"",
-  "document_type":"",
-  "document_subtype":"",
-  "date":"",
-  "date_text":"",
-  "date_range_start":"",
-  "date_range_end":"",
-  "people":[],
-  "organizations":[],
-  "places":[],
-  "addresses":[],
-  "parcels":[],
-  "blocks":[],
-  "sheets":[],
-  "independent_sections":[],
-  "property_descriptions":[],
-  "case_numbers":[],
-  "notary_numbers":[],
-  "registry_numbers":[],
-  "account_numbers":[],
-  "tax_numbers":[],
-  "amounts":[],
-  "currencies":[],
-  "banks":[],
-  "related_document_codes":[],
-  "copy_of":"",
-  "attachments":[],
-  "issuer":"",
-  "recipient":"",
-  "signatories":[],
-  "witnesses":[],
-  "keywords":[],
-  "summary":"",
-  "notes":""
-}
+Return one flat JSON object. Values may be strings, numbers, booleans, or flat arrays of those primitive values. Do not return nested objects. Prefer these common keys when applicable: title, language, document_type, document_subtype, date, date_text, date_range_start, date_range_end, people, organizations, places, addresses, parcels, property_descriptions, case_numbers, notary_numbers, issuer, recipient, signatories, witnesses, keywords, summary, notes. You may create a concise snake_case key for a genuinely different explicit concept in the document.
 
 Markdown supplied for analysis:
 """<document content>"""`;

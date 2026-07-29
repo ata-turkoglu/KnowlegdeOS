@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { flattenGenerationInput } from "@knowledgeos/ai";
-import { buildDynamicChatPrompt, buildStableChatPrefix, createContextCacheIdentity, extractChequePaymentAnswer, selectContextChunks } from "../../src/services/chat.js";
+import { buildDynamicChatPrompt, buildStableChatPrefix, createContextCacheIdentity, createEvidenceSnippet, extractChequePaymentAnswer, extractChequePaymentAnswerFromEvidence, selectContextChunks } from "../../src/services/chat.js";
 
 test("chat cache identity excludes the query but scopes workspace, prompt, provider, and model", () => {
   const base = { workspaceSlug: "workspace-a", workspacePrompt: "stable workspace rules", provider: "openai" as const, model: "gpt-4.1-mini" };
@@ -43,4 +43,27 @@ test("a two-cheque receipt is rendered from its evidence without model paraphras
   assert.match(answer ?? "", /412069/);
   assert.match(answer ?? "", /2\.805\.653 TL/);
   assert.match(answer ?? "", /4\.489\.053 TL/);
+});
+
+test("cheque receipt includes every detected cheque in the total", () => {
+  const evidence = "01.01.2020 tarih ve 1 No.lu Ali Veli imzalı 100.- TL 02.01.2020 tarih ve 2 No.lu Ayşe Demir imzalı 200.- TL 03.01.2020 tarih ve 3 No.lu Mehmet Kaya imzalı 300.- TL";
+  const answer = extractChequePaymentAnswer("Çeklerin toplamı nedir?", evidence);
+  assert.match(answer ?? "", /3 çekle/);
+  assert.match(answer ?? "", /600 TL/);
+});
+
+test("cheque receipt selects the evidence matching every property identifier", () => {
+  const unrelated = "14.10.1977 tarih ve 10 No.lu Ali Veli imzalı 250.000.- TL 07.11.1977 tarih ve 11 No.lu Ayşe Demir imzalı 500.000.- TL";
+  const matching = "Kilyos 1 pafta, 41 parsel ödemesi 27.12.1988 tarih ve 412069 No.lu Aydın Bükülmez imzalı 1.683.400.- TL 29.12.1988 tarih ve 57892 No.lu Av. E. Ruhi Öztürk imzalı 2.805.653.- TL";
+  const answer = extractChequePaymentAnswerFromEvidence("Kilyos 1 pafta 41 parsel çeklerini ver.", [unrelated, matching]);
+  assert.match(answer ?? "", /412069/);
+  assert.match(answer ?? "", /4\.489\.053 TL/);
+  assert.match(answer ?? "", /\[2\]/);
+});
+
+test("evidence snippet centers the source card on a query match", () => {
+  const content = `${"başlangıç ".repeat(80)}parsel 192 tapu kaydı ${"son ".repeat(80)}`;
+  const snippet = createEvidenceSnippet(content, "192 parsel nedir?");
+  assert.match(snippet, /parsel 192 tapu kaydı/);
+  assert.ok(snippet.length <= 502);
 });

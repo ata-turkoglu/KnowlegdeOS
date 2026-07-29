@@ -3,10 +3,14 @@ import type { ApiConfig } from "../config/env.js";
 import { searchSemanticDocuments, type SemanticSearchResult } from "./semantic-search.js";
 import { searchEntityDocuments, type EntitySearchResult } from "./search.js";
 import { getWorkspaceIngestionSettings } from "./workspace-settings.js";
+import { analyzeQuery, type QueryAnalysis } from "./query-analyzer.js";
+import { prepareQueryExecution, type ExecutionPlan } from "./execution-planner.js";
 
 export type HybridSearchResult = {
   queryType: "HYBRID_SEARCH";
   query: string;
+  analysis: QueryAnalysis;
+  executionPlan: ExecutionPlan;
   entity: EntitySearchResult;
   semantic: SemanticSearchResult;
   documents: Array<{
@@ -34,9 +38,17 @@ export async function searchHybridDocuments(
   }
 ): Promise<HybridSearchResult> {
   const settings = await getWorkspaceIngestionSettings(config, input.workspaceSlug);
+  const analysis = await analyzeQuery(config, { workspaceSlug: input.workspaceSlug, query: input.query });
+  const planning = await prepareQueryExecution(config, input.workspaceSlug, {
+    ...analysis,
+    queryType: "HYBRID_SEARCH",
+    intent: analysis.intent === "COUNT" || analysis.intent === "EXISTS" ? "FIND" : analysis.intent
+  }, input.limit ?? settings.semanticTopK);
+  const executionPlan = planning.plan;
+  const allowedDocumentIds = planning.documentIds;
   const [entity, semantic] = await Promise.all([
-    searchEntityDocuments(config, input),
-    searchSemanticDocuments(config, { ...input, limit: input.limit ?? settings.semanticTopK })
+    searchEntityDocuments(config, { ...input, entityIds: analysis.matchedEntityIds, filters: { allowedDocumentIds } }),
+    searchSemanticDocuments(config, { ...input, filters: { allowedDocumentIds }, limit: input.limit ?? settings.semanticTopK })
   ]);
   const byDocument = new Map<string, HybridSearchResult["documents"][number]>();
 
@@ -78,6 +90,8 @@ export async function searchHybridDocuments(
   return {
     queryType: "HYBRID_SEARCH",
     query: input.query,
+    analysis,
+    executionPlan,
     entity,
     semantic,
     documents,

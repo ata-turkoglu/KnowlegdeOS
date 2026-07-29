@@ -1,18 +1,5 @@
-export const entityTypes = [
-  "PERSON",
-  "PLACE",
-  "PARCEL",
-  "DATE",
-  "ORGANIZATION",
-  "DOCUMENT_TYPE",
-  "CASE_NUMBER",
-  "NOTARY_NUMBER",
-  "PROPERTY",
-  "EVENT",
-  "KEYWORD"
-] as const;
-
-export type EntityType = (typeof entityTypes)[number];
+/** Entity kinds are workspace metadata field keys and are resolved at runtime. */
+export type EntityType = string;
 
 export type QueryType = "ENTITY_SEARCH" | "SEMANTIC_SEARCH" | "HYBRID_SEARCH";
 
@@ -22,3 +9,6 @@ export type SourceSnippet = {
   title: string;
   evidenceSnippet: string;
 };
+
+export { chatWorkflowStages } from "./chat-workflow";
+export type { ChatProgress, ChatWorkflowStageId } from "./chat-workflow";
