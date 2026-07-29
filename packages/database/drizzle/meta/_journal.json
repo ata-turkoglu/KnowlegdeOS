@@ -38,6 +38,12 @@
       "breakpoints": true
     },
     { "idx": 5, "version": "7", "when": 1785300000000, "tag": "0005_rag_retrieval_indexes", "breakpoints": true },
-    { "idx": 6, "version": "7", "when": 1785390000000, "tag": "0006_lexical_search_index", "breakpoints": true }
+    { "idx": 6, "version": "7", "when": 1785390000000, "tag": "0006_lexical_search_index", "breakpoints": true },
+    { "idx": 7, "version": "7", "when": 1785476400000, "tag": "0007_entity_quality_property_references", "breakpoints": true },
+    { "idx": 8, "version": "7", "when": 1785562800000, "tag": "0008_dynamic_metadata_fields", "breakpoints": true },
+    { "idx": 9, "version": "7", "when": 1785649200000, "tag": "0009_chunk_entities_and_field_values", "breakpoints": true },
+    { "idx": 10, "version": "7", "when": 1785735600000, "tag": "0010_cost_planner_chunk_reuse", "breakpoints": true },
+    { "idx": 11, "version": "7", "when": 1785822000000, "tag": "0011_query_execution_telemetry", "breakpoints": true },
+    { "idx": 12, "version": "7", "when": 1785908400000, "tag": "0012_chunk_hash_sha256", "breakpoints": true }
   ]
 }

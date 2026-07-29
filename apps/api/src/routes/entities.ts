@@ -9,6 +9,7 @@ import {
   removeEntityAlias,
   rebuildEntityIndex
 } from "../services/entities.js";
+import { getWorkspaceFields } from "../services/workspace-fields.js";
 
 function handleError(reply: FastifyReply, error: unknown) {
   if (isHttpError(error)) {
@@ -27,6 +28,17 @@ function workspaceSlugFromQuery(query: { workspaceSlug?: string }) {
 }
 
 export async function registerEntityRoutes(app: FastifyInstance, config: ApiConfig) {
+  app.get<{ Params: { workspaceSlug: string } }>(
+    "/api/workspaces/:workspaceSlug/fields",
+    async (request, reply) => {
+      try {
+        return await getWorkspaceFields(config, request.params.workspaceSlug);
+      } catch (error) {
+        return handleError(reply, error);
+      }
+    }
+  );
+
   app.get<{ Querystring: { workspaceSlug?: string } }>(
     "/api/entities",
     async (request, reply) => {

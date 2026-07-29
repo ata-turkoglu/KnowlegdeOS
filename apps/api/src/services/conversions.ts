@@ -9,6 +9,7 @@ import { slugify } from "../lib/slug.js";
 import { resolveStorageRoot, writeFileAtomically } from "./storage.js";
 import { getLlmProvider } from "./ai-providers.js";
 import { getWorkspaceYamlMetadataPrompt, interpolateYamlMetadataPrompt } from "./workspace-yaml-prompt.js";
+import { getWorkspaceFieldDefinitions, mergeMetadataValue, registerWorkspaceMetadataFields, type DynamicMetadata, type MetadataValue } from "./workspace-fields.js";
 
 const wordExtensions = new Set([".docx"]);
 
@@ -26,7 +27,7 @@ export type SplitConversionResult = {
   files: ConvertedFile[];
 };
 
-type GeneratedMetadata = Record<string, string | string[]>;
+type GeneratedMetadata = DynamicMetadata;
 
 // U+FFFD means an earlier decoder or the model itself has already lost the
 // original character. C0/C1 control characters are likewise never valid in
@@ -34,13 +35,7 @@ type GeneratedMetadata = Record<string, string | string[]>;
 // corrupted metadata look complete.
 const invalidMetadataCharacter = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uFFFD]/u;
 
-const metadataKeys = [
-  "title", "language", "document_type", "document_subtype", "date", "date_text", "date_range_start", "date_range_end",
-  "people", "organizations", "places", "addresses", "parcels", "blocks", "sheets", "independent_sections",
-  "property_descriptions", "case_numbers", "notary_numbers", "registry_numbers", "account_numbers", "tax_numbers",
-  "amounts", "currencies", "banks", "related_document_codes", "copy_of", "attachments", "issuer", "recipient",
-  "signatories", "witnesses", "keywords", "summary", "notes"
-] as const;
+const systemMetadataKeys = new Set(["document_code", "source_original", "source_file", "ocr_status", "metadata_provider"]);
 
 function resolveConversionWorkspace(config: ApiConfig, workspaceSlugInput: string) {
   // Keep converted files alongside the project's storage root even when the
@@ -170,17 +165,35 @@ export async function addGeneratedYamlMetadata(
   // The generated Markdown is named "<source-stem>-<hash>.md". Preserve the
   // original document extension rather than appending a second .md suffix.
   const sourceOriginal = `${path.parse(safeName).name.replace(/-[a-f0-9]{8}$/i, "")}.docx`;
-  const prompt = interpolateYamlMetadataPrompt(
-    await getWorkspaceYamlMetadataPrompt(config, workspaceSlugInput),
-    { markdown: document.slice(0, 4_500), documentCode, sourceOriginal }
-  );
+  const [workspacePrompt, fields] = await Promise.all([
+    getWorkspaceYamlMetadataPrompt(config, workspaceSlugInput),
+    getWorkspaceFieldDefinitions(config, workspaceSlugInput)
+  ]);
+  const fieldCatalog = fields.length
+    ? fields.map((field) => `${field.key} | ${field.valueType} | ${field.aliases.join(",") || "-"}`).join("\n")
+    : "(workspace field catalog is empty)";
   // Local models can take substantially longer for archival documents. This
   // work intentionally has no application-level deadline.
   const llm = getLlmProvider(config);
   // Request a JSON object at the provider level. This prevents a model's
   // prose wrapper or minor syntax mistake from invalidating the conversion.
-  const generatedResponse = await generateCleanMetadata(llm, prompt);
-  const generated = normalizeMetadata(generatedResponse);
+  let generated: GeneratedMetadata = {};
+  const parts = splitMetadataDocument(document);
+  for (const [index, part] of parts.entries()) {
+    const prompt = `${interpolateYamlMetadataPrompt(
+      workspacePrompt,
+      { markdown: part, documentCode, sourceOriginal }
+    )}
+
+Workspace metadata fields (reuse these keys whenever they fit):
+${fieldCatalog}
+
+This is part ${index + 1} of ${parts.length}. Return a flat JSON object. You may add a new snake_case key only for a genuinely different concept.`;
+    const generatedResponse = await generateCleanMetadata(llm, prompt);
+    generated = mergeGeneratedMetadata(generated, normalizeMetadata(generatedResponse));
+  }
+  const registered = await registerWorkspaceMetadataFields(config, workspaceSlugInput, generated);
+  generated = registered.metadata;
   const frontmatter = serializeMetadata({
     document_code: documentCode,
     source_original: sourceOriginal,
@@ -242,17 +255,63 @@ Markdown supplied for analysis:
 function normalizeMetadata(value: unknown): GeneratedMetadata {
   const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const metadata: GeneratedMetadata = {};
-  for (const key of metadataKeys) {
-    const candidate = input[key];
-    metadata[key] = Array.isArray(candidate)
-      ? candidate.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
-      : typeof candidate === "string" ? candidate.trim() : "";
+  for (const [key, candidate] of Object.entries(input)) {
+    if (systemMetadataKeys.has(key)) continue;
+    if (Array.isArray(candidate)) {
+      const values = candidate.filter((item): item is string | number | boolean =>
+        typeof item === "string" || typeof item === "number" || typeof item === "boolean"
+      ).map((item) => typeof item === "string" ? item.trim() : item).filter((item) => item !== "");
+      metadata[key] = values;
+    } else if (typeof candidate === "string") {
+      metadata[key] = candidate.trim();
+    } else if (typeof candidate === "number" || typeof candidate === "boolean") {
+      metadata[key] = candidate;
+    }
   }
   metadata.language = typeof metadata.language === "string" && metadata.language ? metadata.language : "tr";
-  for (const key of ["date", "date_range_start", "date_range_end"] as const) {
+  for (const key of ["date", "date_range_start", "date_range_end"]) {
     if (typeof metadata[key] === "string" && !isValidIsoDate(metadata[key])) metadata[key] = "";
   }
   return metadata;
+}
+
+function splitMetadataDocument(document: string, maximumCharacters = 12_000) {
+  if (document.length <= maximumCharacters) return [document];
+  const sections = document.split(/(?=^##?\s+)/m).filter((part) => part.trim());
+  const parts: string[] = [];
+  let current = "";
+  for (const section of sections.length ? sections : [document]) {
+    if (section.length > maximumCharacters) {
+      if (current) { parts.push(current); current = ""; }
+      for (let start = 0; start < section.length; start += maximumCharacters - 800) {
+        parts.push(section.slice(start, start + maximumCharacters));
+      }
+      continue;
+    }
+    if (current && current.length + section.length > maximumCharacters) {
+      parts.push(current);
+      current = section;
+    } else {
+      current += section;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function mergeGeneratedMetadata(current: GeneratedMetadata, incoming: GeneratedMetadata) {
+  const merged = { ...current };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === "" || Array.isArray(value) && value.length === 0) continue;
+    if (key === "title" && merged.title) continue;
+    if (["date", "date_range_start", "date_range_end"].includes(key) && merged[key] !== undefined && merged[key] !== value) {
+      merged[key] = "";
+      continue;
+    }
+    merged[key] = mergeMetadataValue(merged[key], value);
+  }
+  if (Array.isArray(merged.summary)) merged.summary = merged.summary.map(String).join(" ").slice(0, 2_000);
+  return merged;
 }
 
 async function generateCleanMetadata(
@@ -309,7 +368,7 @@ function parseGeneratedJson(value: string): unknown {
   }
 }
 
-function serializeMetadata(metadata: Record<string, string | string[]>) {
+function serializeMetadata(metadata: Record<string, MetadataValue>) {
   return `${Object.entries(metadata).map(([key, value]) => Array.isArray(value)
     ? (value.length ? `${key}:\n${value.map((item) => `  - ${JSON.stringify(item)}`).join("\n")}` : `${key}: []`)
     : `${key}: ${JSON.stringify(value)}`).join("\n")}\n`;

@@ -4,6 +4,7 @@ import path from "node:path";
 
 export type LlmTemperatureProfile = "extraction" | "answer" | "summary" | "creative";
 export type LlmTemperatures = Record<LlmTemperatureProfile, number>;
+export type SmallModelRole = "entityLinker" | "reranker" | "fieldMatcher";
 
 function temperature(value: string | undefined, fallback: number) {
   return Math.max(0, Math.min(2, Number(value ?? fallback)));
@@ -48,6 +49,9 @@ export type ApiConfig = {
   anthropicApiKey: string;
   anthropicLlmModel: string;
   anthropicBaseUrl: string;
+  entityLinkerModel: string;
+  rerankerModel: string;
+  fieldMatcherModel: string;
   llmContextCacheEnabled: boolean;
   llmContextCacheLogUsage: boolean;
   /** 0 selects an automatic model-aware RAG input budget. */
@@ -61,6 +65,20 @@ export type ApiConfig = {
 };
 
 export function loadConfig(): ApiConfig {
+  const llmProvider = (["openai", "gemini", "anthropic"] as const).includes(process.env.LLM_PROVIDER as "openai") ? process.env.LLM_PROVIDER as ApiConfig["llmProvider"] : "ollama";
+  const embeddingProvider = (process.env.EMBEDDING_PROVIDER === "openai" || process.env.EMBEDDING_PROVIDER === "gemini") ? process.env.EMBEDDING_PROVIDER : "ollama";
+  const defaultLlmModel = llmProvider === "openai"
+    ? process.env.OPENAI_LLM_MODEL ?? "gpt-4.1-mini"
+    : llmProvider === "gemini"
+      ? process.env.GEMINI_LLM_MODEL ?? "gemini-2.5-flash"
+      : llmProvider === "anthropic"
+        ? process.env.ANTHROPIC_LLM_MODEL ?? "claude-sonnet-4-20250514"
+        : process.env.OLLAMA_LLM_MODEL ?? "qwen3:8b";
+  const defaultEmbeddingModel = embeddingProvider === "openai"
+    ? process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small"
+    : embeddingProvider === "gemini"
+      ? process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2"
+      : process.env.OLLAMA_EMBEDDING_MODEL ?? "bge-m3:latest";
   return {
     databaseUrl:
       process.env.DATABASE_URL ??
@@ -80,8 +98,8 @@ export function loadConfig(): ApiConfig {
     },
     ollamaEmbeddingModel:
       process.env.OLLAMA_EMBEDDING_MODEL ?? "bge-m3:latest",
-    llmProvider: (["openai", "gemini", "anthropic"] as const).includes(process.env.LLM_PROVIDER as "openai") ? process.env.LLM_PROVIDER as ApiConfig["llmProvider"] : "ollama",
-    embeddingProvider: (process.env.EMBEDDING_PROVIDER === "openai" || process.env.EMBEDDING_PROVIDER === "gemini") ? process.env.EMBEDDING_PROVIDER : "ollama",
+    llmProvider,
+    embeddingProvider,
     openaiApiKey: process.env.OPENAI_API_KEY ?? "",
     openaiLlmModel: process.env.OPENAI_LLM_MODEL ?? "gpt-4.1-mini",
     openaiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
@@ -91,6 +109,9 @@ export function loadConfig(): ApiConfig {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
     anthropicLlmModel: process.env.ANTHROPIC_LLM_MODEL ?? "claude-sonnet-4-20250514",
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
+    entityLinkerModel: process.env.SMALL_ENTITY_LINKER_MODEL ?? defaultLlmModel,
+    rerankerModel: process.env.SMALL_RERANKER_MODEL ?? defaultLlmModel,
+    fieldMatcherModel: process.env.SMALL_FIELD_MATCHER_MODEL ?? defaultEmbeddingModel,
     llmContextCacheEnabled: enabled(process.env.LLM_CONTEXT_CACHE_ENABLED, true),
     llmContextCacheLogUsage: enabled(process.env.LLM_CONTEXT_CACHE_LOG_USAGE, true),
     ragSoftInputTokens: Math.max(0, Number(process.env.RAG_SOFT_INPUT_TOKENS ?? 0)),

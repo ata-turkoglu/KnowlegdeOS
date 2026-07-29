@@ -9,6 +9,7 @@ import { getWorkspaceYamlMetadataPrompt, saveWorkspaceYamlMetadataPrompt } from 
 import { getWorkspaceChatSystemPrompt, saveWorkspaceChatSystemPrompt } from "../services/workspace-chat-prompt.js";
 import { getWorkspaceReindexStatus, reindexWorkspaceDocuments } from "../services/documents.js";
 import { invalidateCapabilities, resolveModelCapabilities } from "../services/model-capabilities.js";
+import { getSmallModelMetrics } from "../services/small-model-metrics.js";
 
 type OllamaTagsResponse = {
   models?: Array<{ name?: string }>;
@@ -184,6 +185,9 @@ async function restoreSelectedModels(config: ApiConfig) {
       llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>>;
       ragSoftInputTokens?: number;
       ragReservedOutputTokens?: number;
+      entityLinkerModel?: string;
+      rerankerModel?: string;
+      fieldMatcherModel?: string;
     };
     if (saved.llmProvider) config.llmProvider = saved.llmProvider;
     if (saved.embeddingProvider) config.embeddingProvider = saved.embeddingProvider;
@@ -206,6 +210,12 @@ async function restoreSelectedModels(config: ApiConfig) {
     if (saved.anthropicApiKey) config.anthropicApiKey = saved.anthropicApiKey;
     if (typeof saved.ragSoftInputTokens === "number") config.ragSoftInputTokens = Math.max(0, saved.ragSoftInputTokens);
     if (typeof saved.ragReservedOutputTokens === "number") config.ragReservedOutputTokens = Math.max(256, saved.ragReservedOutputTokens);
+    if (saved.entityLinkerModel) config.entityLinkerModel = saved.entityLinkerModel;
+    if (saved.rerankerModel) config.rerankerModel = saved.rerankerModel;
+    if (saved.fieldMatcherModel) config.fieldMatcherModel = saved.fieldMatcherModel;
+    if (!saved.entityLinkerModel) config.entityLinkerModel = activeLlmModel(config);
+    if (!saved.rerankerModel) config.rerankerModel = activeLlmModel(config);
+    if (!saved.fieldMatcherModel) config.fieldMatcherModel = activeEmbeddingModel(config);
     if (typeof saved.llmTemperature === "number") config.llmTemperature = Math.max(0, Math.min(2, saved.llmTemperature));
     for (const profile of llmTemperatureProfiles) {
       const value = saved.llmTemperatures?.[profile];
@@ -221,7 +231,7 @@ async function persistSelectedModels(config: ApiConfig) {
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(
     target,
-    JSON.stringify({ llmModel: activeLlmModel(config), embeddingModel: activeEmbeddingModel(config), llmProvider: config.llmProvider, embeddingProvider: config.embeddingProvider, llmTemperature: config.llmTemperature, llmTemperatures: config.llmTemperatures, ragSoftInputTokens: config.ragSoftInputTokens, ragReservedOutputTokens: config.ragReservedOutputTokens }, null, 2),
+    JSON.stringify({ llmModel: activeLlmModel(config), embeddingModel: activeEmbeddingModel(config), llmProvider: config.llmProvider, embeddingProvider: config.embeddingProvider, entityLinkerModel: config.entityLinkerModel, rerankerModel: config.rerankerModel, fieldMatcherModel: config.fieldMatcherModel, llmTemperature: config.llmTemperature, llmTemperatures: config.llmTemperatures, ragSoftInputTokens: config.ragSoftInputTokens, ragReservedOutputTokens: config.ragReservedOutputTokens }, null, 2),
     "utf8"
   );
   await writeEnvironmentValues({
@@ -238,6 +248,9 @@ async function persistSelectedModels(config: ApiConfig) {
     ANTHROPIC_API_KEY: config.anthropicApiKey,
     ANTHROPIC_LLM_MODEL: config.anthropicLlmModel,
     ANTHROPIC_BASE_URL: config.anthropicBaseUrl,
+    SMALL_ENTITY_LINKER_MODEL: config.entityLinkerModel,
+    SMALL_RERANKER_MODEL: config.rerankerModel,
+    SMALL_FIELD_MATCHER_MODEL: config.fieldMatcherModel,
     RAG_SOFT_INPUT_TOKENS: String(config.ragSoftInputTokens),
     RAG_RESERVED_OUTPUT_TOKENS: String(config.ragReservedOutputTokens),
     LLM_TEMPERATURE: String(config.llmTemperature),
@@ -279,6 +292,10 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
       embeddingModel: activeEmbeddingModel(config),
       llmProvider: config.llmProvider,
       embeddingProvider: config.embeddingProvider,
+      entityLinkerModel: config.entityLinkerModel,
+      rerankerModel: config.rerankerModel,
+      fieldMatcherModel: config.fieldMatcherModel,
+      smallModelMetrics: getSmallModelMetrics(),
       llmTemperature: config.llmTemperature,
       llmTemperatures: config.llmTemperatures,
       ragSoftInputTokens: config.ragSoftInputTokens,
@@ -293,10 +310,13 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
   });
 
   app.put<{
-    Body: { llmModel?: string; embeddingModel?: string; llmProvider?: Provider; embeddingProvider?: EmbeddingProvider; llmTemperature?: number; llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number };
+    Body: { llmModel?: string; embeddingModel?: string; entityLinkerModel?: string; rerankerModel?: string; fieldMatcherModel?: string; llmProvider?: Provider; embeddingProvider?: EmbeddingProvider; llmTemperature?: number; llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number };
   }>("/api/settings/models", async (request, reply) => {
     const llmModel = request.body?.llmModel?.trim();
     const embeddingModel = request.body?.embeddingModel?.trim();
+    const entityLinkerModel = request.body?.entityLinkerModel?.trim();
+    const rerankerModel = request.body?.rerankerModel?.trim();
+    const fieldMatcherModel = request.body?.fieldMatcherModel?.trim();
     const llmProvider = request.body?.llmProvider ?? "ollama";
     const embeddingProvider = request.body?.embeddingProvider ?? "ollama";
     const llmTemperature = request.body?.llmTemperature ?? config.llmTemperature;
@@ -307,8 +327,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
       const value = request.body?.llmTemperatures?.[profile];
       if (value !== undefined) llmTemperatures[profile] = value;
     }
-    if (!llmModel || !embeddingModel) {
-      return reply.code(400).send({ message: "LLM and embedding models are required." });
+    if (!llmModel || !embeddingModel || !entityLinkerModel || !rerankerModel || !fieldMatcherModel) {
+      return reply.code(400).send({ message: "All primary and small-task models are required." });
     }
 
     if (!["ollama", "openai", "gemini", "anthropic"].includes(llmProvider) || !["ollama", "openai", "gemini"].includes(embeddingProvider)) return reply.code(400).send({ message: "Invalid AI provider." });
@@ -317,7 +337,7 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     if (llmProvider === "openai" && !config.openaiApiKey || embeddingProvider === "openai" && !config.openaiApiKey || llmProvider === "gemini" && !config.geminiApiKey || embeddingProvider === "gemini" && !config.geminiApiKey || llmProvider === "anthropic" && !config.anthropicApiKey) return reply.code(400).send({ message: "The selected provider API key is not configured." });
     if (llmProvider === "ollama" || embeddingProvider === "ollama") {
       const installed = new Set(await getInstalledModels(config.ollamaBaseUrl));
-      if ((llmProvider === "ollama" && !installed.has(llmModel)) || (embeddingProvider === "ollama" && !installed.has(embeddingModel))) return reply.code(400).send({ message: "Select installed Ollama models." });
+      if ((llmProvider === "ollama" && (![llmModel, entityLinkerModel, rerankerModel].every((model) => installed.has(model)))) || (embeddingProvider === "ollama" && ![embeddingModel, fieldMatcherModel].every((model) => installed.has(model)))) return reply.code(400).send({ message: "Select installed Ollama models." });
     }
 
     config.llmProvider = llmProvider; config.embeddingProvider = embeddingProvider;
@@ -325,11 +345,14 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     config.llmTemperatures = llmTemperatures;
     config.ragSoftInputTokens = ragSoftInputTokens;
     config.ragReservedOutputTokens = ragReservedOutputTokens;
+    config.entityLinkerModel = entityLinkerModel;
+    config.rerankerModel = rerankerModel;
+    config.fieldMatcherModel = fieldMatcherModel;
     if (llmProvider === "ollama") config.ollamaLlmModel = llmModel; else if (llmProvider === "openai") config.openaiLlmModel = llmModel; else if (llmProvider === "gemini") config.geminiLlmModel = llmModel; else config.anthropicLlmModel = llmModel;
     if (embeddingProvider === "ollama") config.ollamaEmbeddingModel = embeddingModel; else if (embeddingProvider === "openai") config.openaiEmbeddingModel = embeddingModel; else config.geminiEmbeddingModel = embeddingModel;
     invalidateCapabilities();
     await persistSelectedModels(config);
-    return { llmModel, embeddingModel, llmTemperature, llmTemperatures, ragSoftInputTokens, ragReservedOutputTokens, capabilities: await resolveModelCapabilities(config, true) };
+    return { llmModel, embeddingModel, entityLinkerModel, rerankerModel, fieldMatcherModel, llmTemperature, llmTemperatures, ragSoftInputTokens, ragReservedOutputTokens, capabilities: await resolveModelCapabilities(config, true) };
   });
 
   app.post("/api/settings/model-capabilities/refresh", async () => {
@@ -388,6 +411,7 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
       onProgress: (progress) => Object.assign(operation, progress)
     }).then(() => {
       operation.status = "completed";
+      operation.completed = operation.total;
       completeWorkspaceReindexOperation(operationId, workspaceSlug);
     }).catch((error) => {
       operation.status = controller.signal.aborted ? "cancelled" : "failed";

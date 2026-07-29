@@ -1,5 +1,6 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
+  boolean,
   date,
   index,
   integer,
@@ -15,23 +16,10 @@ import {
   vector
 } from "drizzle-orm/pg-core";
 
-export const entityTypeEnum = pgEnum("entity_type", [
-  "PERSON",
-  "PLACE",
-  "PARCEL",
-  "DATE",
-  "ORGANIZATION",
-  "DOCUMENT_TYPE",
-  "CASE_NUMBER",
-  "NOTARY_NUMBER",
-  "PROPERTY",
-  "EVENT",
-  "KEYWORD"
-]);
-
 export const entityAliasSourceEnum = pgEnum("entity_alias_source", [
   "LLM",
   "REGEX",
+  "FRONTMATTER",
   "USER",
   "IMPORT"
 ]);
@@ -113,16 +101,44 @@ export const documentChunks = pgTable(
     heading: text("heading"),
     content: text("content").notNull(),
     normalizedContent: text("normalized_content").notNull(),
+    contentHash: text("content_hash").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
     // bge-m3 (the configured default) emits 1024 dimensions.
     embedding: vector("embedding", { dimensions: 1024 }),
+    embeddingModel: text("embedding_model"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => ({
     documentIdIdx: index("document_chunks_document_id_idx").on(table.documentId),
+    contentHashIdx: index("document_chunks_content_hash_idx").on(table.contentHash),
     documentChunkUnique: unique("document_chunks_document_chunk_index_unique").on(
       table.documentId,
       table.chunkIndex
+    )
+  })
+);
+
+export const workspaceFields = pgTable(
+  "workspace_fields",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    label: text("label").notNull(),
+    valueType: text("value_type").notNull().default("TEXT"),
+    filterable: boolean("filterable").notNull().default(true),
+    entityEnabled: boolean("entity_enabled").notNull().default(true),
+    searchable: boolean("searchable").notNull().default(true),
+    aliases: text("aliases").array().notNull().default(sql`'{}'::text[]`),
+    ...timestamps
+  },
+  (table) => ({
+    workspaceIdIdx: index("workspace_fields_workspace_id_idx").on(table.workspaceId),
+    workspaceKeyUnique: uniqueIndex("workspace_fields_workspace_key_unique").on(
+      table.workspaceId,
+      table.key
     )
   })
 );
@@ -131,20 +147,48 @@ export const entities = pgTable(
   "entities",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id")
+    fieldId: uuid("field_id")
       .notNull()
-      .references(() => workspaces.id, { onDelete: "cascade" }),
-    type: entityTypeEnum("type").notNull(),
+      .references(() => workspaceFields.id, { onDelete: "cascade" }),
     canonicalValue: text("canonical_value").notNull(),
     normalizedValue: text("normalized_value").notNull(),
     ...timestamps
   },
   (table) => ({
-    workspaceIdIdx: index("entities_workspace_id_idx").on(table.workspaceId),
-    entityUnique: uniqueIndex("entities_workspace_type_normalized_unique").on(
-      table.workspaceId,
-      table.type,
+    fieldIdIdx: index("entities_field_id_idx").on(table.fieldId),
+    entityUnique: uniqueIndex("entities_field_normalized_unique").on(
+      table.fieldId,
       table.normalizedValue
+    )
+  })
+);
+
+export const documentFieldValues = pgTable(
+  "document_field_values",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    fieldId: uuid("field_id")
+      .notNull()
+      .references(() => workspaceFields.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull().default(0),
+    textValue: text("text_value"),
+    normalizedValue: text("normalized_value"),
+    dateValue: date("date_value"),
+    numberValue: real("number_value"),
+    booleanValue: boolean("boolean_value"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    documentIdIdx: index("document_field_values_document_id_idx").on(table.documentId),
+    fieldIdIdx: index("document_field_values_field_id_idx").on(table.fieldId),
+    normalizedValueIdx: index("document_field_values_normalized_value_idx").on(table.normalizedValue),
+    documentFieldOrdinalUnique: uniqueIndex("document_field_values_document_field_ordinal_unique").on(
+      table.documentId,
+      table.fieldId,
+      table.ordinal
     )
   })
 );
@@ -181,9 +225,11 @@ export const documentEntities = pgTable(
     entityId: uuid("entity_id")
       .notNull()
       .references(() => entities.id, { onDelete: "cascade" }),
-    occurrenceCount: integer("occurrence_count").notNull().default(1),
+    mentionCount: integer("mention_count").notNull().default(0),
+    maxChunkMentions: integer("max_chunk_mentions").notNull().default(0),
     evidenceSnippet: text("evidence_snippet").notNull(),
     confidence: real("confidence").notNull().default(1),
+    source: text("source").notNull().default("FRONTMATTER"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => ({
@@ -193,6 +239,30 @@ export const documentEntities = pgTable(
       table.documentId,
       table.entityId
     )
+  })
+);
+
+export const chunkEntities = pgTable(
+  "chunk_entities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    chunkId: uuid("chunk_id")
+      .notNull()
+      .references(() => documentChunks.id, { onDelete: "cascade" }),
+    entityId: uuid("entity_id")
+      .notNull()
+      .references(() => entities.id, { onDelete: "cascade" }),
+    mentionCount: integer("mention_count").notNull().default(1),
+    firstOffset: integer("first_offset"),
+    evidenceSnippet: text("evidence_snippet").notNull(),
+    confidence: real("confidence").notNull().default(1),
+    source: text("source").notNull().default("TEXT_MATCH"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    chunkIdIdx: index("chunk_entities_chunk_id_idx").on(table.chunkId),
+    entityIdIdx: index("chunk_entities_entity_id_idx").on(table.entityId),
+    chunkEntityUnique: uniqueIndex("chunk_entities_chunk_entity_unique").on(table.chunkId, table.entityId)
   })
 );
 
@@ -206,6 +276,9 @@ export const relationships = pgTable(
     documentId: uuid("document_id").references(() => documents.id, {
       onDelete: "set null"
     }),
+    chunkId: uuid("chunk_id").references(() => documentChunks.id, {
+      onDelete: "set null"
+    }),
     sourceEntityId: uuid("source_entity_id")
       .notNull()
       .references(() => entities.id, { onDelete: "cascade" }),
@@ -215,7 +288,7 @@ export const relationships = pgTable(
       .references(() => entities.id, { onDelete: "cascade" }),
     evidenceSnippet: text("evidence_snippet").notNull(),
     confidence: real("confidence").notNull().default(1),
-    /** RULE = conservative co-occurrence; LLM = extracted semantic relation. */
+    /** Semantic relationship provenance. Co-occurrence is derived at runtime. */
     origin: text("origin").notNull().default("LLM"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -226,6 +299,38 @@ export const relationships = pgTable(
     ),
     targetEntityIdIdx: index("relationships_target_entity_id_idx").on(
       table.targetEntityId
+    )
+  })
+);
+
+export const propertyReferences = pgTable(
+  "property_references",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    place: text("place"),
+    normalizedPlace: text("normalized_place"),
+    sheet: text("sheet"),
+    block: text("block"),
+    parcel: text("parcel").notNull(),
+    normalizedKey: text("normalized_key").notNull(),
+    evidenceSnippet: text("evidence_snippet").notNull(),
+    confidence: real("confidence").notNull().default(1),
+    source: entityAliasSourceEnum("source").notNull().default("REGEX"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    workspaceIdIdx: index("property_references_workspace_id_idx").on(table.workspaceId),
+    documentIdIdx: index("property_references_document_id_idx").on(table.documentId),
+    normalizedKeyIdx: index("property_references_normalized_key_idx").on(table.normalizedKey),
+    documentKeyUnique: uniqueIndex("property_references_document_key_unique").on(
+      table.documentId,
+      table.normalizedKey
     )
   })
 );
@@ -284,10 +389,43 @@ export const chatMessages = pgTable(
   })
 );
 
+export const queryExecutions = pgTable(
+  "query_executions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    queryHash: text("query_hash").notNull(),
+    intent: text("intent").notNull(),
+    strategy: text("strategy").notNull(),
+    planJson: jsonb("plan_json").notNull(),
+    estimatedRows: integer("estimated_rows").notNull().default(0),
+    actualRows: integer("actual_rows").notNull().default(0),
+    planningMs: real("planning_ms").notNull().default(0),
+    executionMs: real("execution_ms").notNull().default(0),
+    fallbackUsed: boolean("fallback_used").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    workspaceCreatedIdx: index("query_executions_workspace_created_idx").on(table.workspaceId, table.createdAt),
+    queryHashIdx: index("query_executions_query_hash_idx").on(table.queryHash)
+  })
+);
+
 export const workspaceRelations = relations(workspaces, ({ many }) => ({
   documents: many(documents),
-  entities: many(entities),
-  chatSessions: many(chatSessions)
+  fields: many(workspaceFields),
+  chatSessions: many(chatSessions),
+  queryExecutions: many(queryExecutions)
+}));
+
+export const workspaceFieldRelations = relations(workspaceFields, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [workspaceFields.workspaceId],
+    references: [workspaces.id]
+  }),
+  entities: many(entities)
 }));
 
 export const documentRelations = relations(documents, ({ one, many }) => ({
@@ -296,14 +434,17 @@ export const documentRelations = relations(documents, ({ one, many }) => ({
     references: [workspaces.id]
   }),
   chunks: many(documentChunks),
-  documentEntities: many(documentEntities)
+  documentEntities: many(documentEntities),
+  documentFieldValues: many(documentFieldValues),
+  propertyReferences: many(propertyReferences)
 }));
 
 export const entityRelations = relations(entities, ({ one, many }) => ({
-  workspace: one(workspaces, {
-    fields: [entities.workspaceId],
-    references: [workspaces.id]
+  field: one(workspaceFields, {
+    fields: [entities.fieldId],
+    references: [workspaceFields.id]
   }),
   aliases: many(entityAliases),
-  documentEntities: many(documentEntities)
+  documentEntities: many(documentEntities),
+  chunkEntities: many(chunkEntities)
 }));

@@ -7,6 +7,18 @@ export type ExtractedEntity = {
   normalizedValue: string;
   evidenceSnippet: string;
   confidence: number;
+  source: "REGEX" | "FRONTMATTER" | "LLM";
+};
+
+export type ExtractedPropertyReference = {
+  place: string | null;
+  normalizedPlace: string | null;
+  sheet: string | null;
+  block: string | null;
+  parcel: string;
+  normalizedKey: string;
+  evidenceSnippet: string;
+  confidence: number;
   source: "REGEX" | "FRONTMATTER";
 };
 
@@ -22,12 +34,12 @@ const extractionPatterns: Array<{
 }> = [
   {
     type: "DATE",
-    pattern: /\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4})\b/g,
+    pattern: /\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|(?:18|19|20)\d{2})\b/g,
     confidence: 0.88
   },
   {
     type: "PARCEL",
-    pattern: /\b(?:ada|pafta|parsel)\s*(?:no|numara|numarası)?[:\s-]*\d+[A-Za-z/-]*\b/giu,
+    pattern: /\b(?:(?:ada|pafta|parsel)\s*(?:no|numara|numarası)?[:\s-]*\d+[A-Za-z/-]*|\d+[A-Za-z/-]*\s*(?:ada|pafta|parsel))\b/giu,
     confidence: 0.9
   },
   {
@@ -43,8 +55,8 @@ const extractionPatterns: Array<{
 ];
 
 const personPattern =
-  /\b[A-ZÇĞİÖŞÜ][a-zçğıöşü]{1,}(?:\s+[A-ZÇĞİÖŞÜ]\.)?(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]{1,}){1,3}\b/g;
-const abbreviatedPersonPattern = /\b[A-ZÇĞİÖŞÜ]\.\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]{1,}\b/g;
+  /\b\p{Lu}[\p{L}'’.-]{1,}(?:[ \t]+\p{Lu}\.)?(?:[ \t]+\p{Lu}[\p{L}'’.-]{1,}){1,3}\b/gu;
+const abbreviatedPersonPattern = /\b\p{Lu}\.[ \t]+\p{Lu}[\p{L}'’.-]{1,}(?:[ \t]+\p{Lu}[\p{L}'’.-]{1,}){0,2}\b/gu;
 
 const ignoredPersonStarts = new Set([
   "Bu",
@@ -58,6 +70,16 @@ const ignoredPersonStarts = new Set([
   "TIFF"
 ]);
 const ignoredPersonValues = new Set(["Knowledge Graph"]);
+const ignoredPersonTerms = new Set([
+  "akbank", "anonim", "bakanligi", "bankasi", "belediye", "dairesi", "genel",
+  "hukuk", "icra", "kadastro", "mahkeme", "mahkemesi", "memurlugu",
+  "mudurlugu", "noter", "sicil", "sirketi", "tapusu", "vergi"
+]);
+const ignoredPersonTermPrefixes = [
+  "bank", "bakan", "belediye", "daire", "gumruk", "hukuk", "icra",
+  "kadastro", "kooperatif", "mahkem", "memurl", "mudur", "noter",
+  "sirket", "tapu", "vergi", "vezne"
+];
 
 export function deterministicExtract(input: ExtractionInput) {
   const entities: ExtractedEntity[] = [];
@@ -90,6 +112,47 @@ export function deterministicExtract(input: ExtractionInput) {
   return dedupeEntities(entities);
 }
 
+export function extractPropertyReferences(input: ExtractionInput): ExtractedPropertyReference[] {
+  const descriptions = metadataValues(input.frontmatter.property_descriptions);
+  const candidates = [
+    ...descriptions.map((evidence) => ({ evidence, source: "FRONTMATTER" as const, confidence: 0.98 })),
+    ...propertyEvidenceSegments(input.content).map((evidence) => ({ evidence, source: "REGEX" as const, confidence: 0.9 }))
+  ];
+  const places = metadataValues(input.frontmatter.places);
+  const references: ExtractedPropertyReference[] = [];
+
+  for (const candidate of candidates) {
+    const anchors = labeledPropertyValues(candidate.evidence);
+    if (!anchors.parsel) continue;
+    const normalizedEvidence = normalizeForSearch(candidate.evidence);
+    const matchedPlace = places
+      .map((place) => ({ place, normalized: normalizeForSearch(place) }))
+      .find(({ normalized }) => normalizedEvidence.includes(normalized));
+    const place = matchedPlace?.place ?? (places.length === 1 ? places[0] : null);
+    const normalizedPlace = place ? normalizeForSearch(place) : null;
+    const normalizedKey = [normalizedPlace ?? "-", anchors.pafta ?? "-", anchors.ada ?? "-", anchors.parsel].join("|");
+
+    references.push({
+      place,
+      normalizedPlace,
+      sheet: anchors.pafta ?? null,
+      block: anchors.ada ?? null,
+      parcel: anchors.parsel,
+      normalizedKey,
+      evidenceSnippet: candidate.evidence.replace(/\s+/g, " ").trim().slice(0, 600),
+      confidence: candidate.confidence,
+      source: candidate.source
+    });
+  }
+
+  const byKey = new Map<string, ExtractedPropertyReference>();
+  for (const reference of references) {
+    const existing = byKey.get(reference.normalizedKey);
+    if (!existing || existing.confidence < reference.confidence) byKey.set(reference.normalizedKey, reference);
+  }
+  return [...byKey.values()];
+}
+
 function addPersonMatches(
   entities: ExtractedEntity[],
   content: string,
@@ -97,12 +160,14 @@ function addPersonMatches(
   confidence: number
 ) {
   for (const match of content.matchAll(pattern)) {
-    const value = match[0].trim();
+    const value = cleanPersonCandidate(match[0]);
     const firstWord = value.split(/\s+/)[0];
 
     if (
+      !value ||
       ignoredPersonStarts.has(firstWord) ||
       ignoredPersonValues.has(value) ||
+      looksInstitutionalPerson(value) ||
       value.length > 80
     ) {
       continue;
@@ -112,11 +177,25 @@ function addPersonMatches(
       type: "PERSON",
       value,
       normalizedValue: normalizeForSearch(value),
-      evidenceSnippet: snippetAround(content, match.index ?? 0, value.length),
+      evidenceSnippet: snippetAround(content, match.index ?? 0, match[0].length),
       confidence,
       source: "REGEX"
     });
   }
+}
+
+function looksInstitutionalPerson(value: string) {
+  return normalizeForSearch(value).split(" ").some((term) =>
+    ignoredPersonTerms.has(term) || ignoredPersonTermPrefixes.some((prefix) => term.startsWith(prefix))
+  );
+}
+
+function cleanPersonCandidate(value: string) {
+  return value
+    .trim()
+    .replace(/^(?:(?:Av|Rh|Dr|Prof|No\.lu|T\.C|TL)\.?\s+)+/u, "")
+    .replace(/[’'][a-zçğıöşü]{1,4}$/iu, "")
+    .trim();
 }
 
 function addFrontmatterEntities(
@@ -146,9 +225,12 @@ function addFrontmatterEntities(
       if (!value.trim()) {
         continue;
       }
+      const type = mapping.type === "PERSON" && looksInstitutionalPerson(value)
+        ? "ORGANIZATION"
+        : mapping.type;
 
       entities.push({
-        type: mapping.type,
+        type,
         value,
         normalizedValue: normalizeForSearch(value),
         evidenceSnippet: `frontmatter:${mapping.key}`,
@@ -167,11 +249,39 @@ function dedupeEntities(entities: ExtractedEntity[]) {
     const existing = byKey.get(key);
 
     if (!existing || existing.confidence < entity.confidence) {
+      if (entity.evidenceSnippet.startsWith("frontmatter:") && existing && !existing.evidenceSnippet.startsWith("frontmatter:")) {
+        entity.evidenceSnippet = existing.evidenceSnippet;
+      }
       byKey.set(key, entity);
+    } else if (existing.evidenceSnippet.startsWith("frontmatter:") && !entity.evidenceSnippet.startsWith("frontmatter:")) {
+      existing.evidenceSnippet = entity.evidenceSnippet;
     }
   }
 
   return [...byKey.values()].sort((a, b) => a.type.localeCompare(b.type));
+}
+
+function metadataValues(value: string | string[] | undefined) {
+  return (Array.isArray(value) ? value : value ? [value] : []).map((item) => item.trim()).filter(Boolean);
+}
+
+function propertyEvidenceSegments(content: string) {
+  return content
+    .split(/\n+|(?<=[.;!?])\s+/u)
+    .map((segment) => segment.trim())
+    .filter((segment) => /\bparsel\b/iu.test(segment) && /\d/u.test(segment))
+    .filter((segment) => segment.length <= 1_200);
+}
+
+function labeledPropertyValues(value: string) {
+  const normalized = normalizeForSearch(value);
+  const result: Partial<Record<"ada" | "pafta" | "parsel", string>> = {};
+  for (const label of ["ada", "pafta", "parsel"] as const) {
+    const before = normalized.match(new RegExp(`\\b(\\d+(?:[/-]\\d+)?)\\s+${label}\\b`, "u"))?.[1];
+    const after = normalized.match(new RegExp(`\\b${label}(?:\\s+(?:no|numara|numarasi))?\\s+(\\d+(?:[/-]\\d+)?)\\b`, "u"))?.[1];
+    result[label] = before ?? after;
+  }
+  return result;
 }
 
 function snippetAround(content: string, index: number, length: number) {
