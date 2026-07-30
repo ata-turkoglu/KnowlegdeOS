@@ -9,11 +9,11 @@ type SectionPageProps = {
 };
 
 function isWorkspaceSectionId(section: string): section is WorkspaceSectionId {
-  return sections.some((item) => item.id === section);
+  return section === "architecture" || sections.some((item) => item.id === section);
 }
 
 export function generateStaticParams() {
-  return sections.map((section) => ({
+  return [...sections, { id: "architecture" }].map((section) => ({
     section: section.id
   }));
 }

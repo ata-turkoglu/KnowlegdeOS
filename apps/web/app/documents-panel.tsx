@@ -31,6 +31,7 @@ type DocumentDetail = DocumentItem & {
   hash: string;
   summary: string | null;
   markdown: string;
+  quality: { checkedChunkCount: number; issueCount: number; issues: Array<{ chunkIndex: number; code: "TOO_SHORT" | "DUPLICATE" | "OCR_ARTIFACTS" | "LOW_TEXT_DENSITY"; severity: "warning" | "error" }> };
   chunks: Array<{
     chunkIndex: number;
     heading: string;
@@ -528,6 +529,12 @@ export function DocumentsPanel() {
               {selectedDocument.summary}
             </p>
           ) : null}
+
+          {selectedDocument.quality.issueCount > 0 ? <section className="settings-note document-quality-report">
+            <strong>{isEnglish ? "Index quality warnings" : "İndeks kalite uyarıları"}</strong>
+            <p>{isEnglish ? `${selectedDocument.quality.issueCount} issue(s) across ${selectedDocument.quality.checkedChunkCount} sections.` : `${selectedDocument.quality.checkedChunkCount} bölümde ${selectedDocument.quality.issueCount} uyarı bulundu.`}</p>
+            <p>{selectedDocument.quality.issues.map((issue) => `#${issue.chunkIndex}: ${issue.code}`).join(" · ")}</p>
+          </section> : null}
 
           <div className="detail-grid">
             <section>

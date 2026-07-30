@@ -1,5 +1,14 @@
 # Database Design
 
+## Data Lineage Haritası
+
+Uygulamadaki `/architecture` ekranının **Veritabanı şeması** tabı, bu şemadaki tabloları ve foreign-key ilişkilerini gösterir.
+
+- **Upload & Indexing** tabı `documents`, `document_chunks`, `document_field_values`, `entities`, `entity_aliases`, `document_entities`, `chunk_entities`, `relationships` ve `property_references` yazımlarını gösterir.
+- **Search** ve **Chat** tabları metadata kapsamı, entity kanıtı, lexical/pgvector retrieval ve sohbet persistence için yapılan okumaları/yazımları gösterir.
+
+Şemada veya bu okuma/yazma yollarında değişiklik yapılırsa `apps/web/app/architecture-map.tsx` içindeki ilgili workflow tabı ve Database Schema tabı aynı değişiklikte güncellenmelidir.
+
 ## PostgreSQL Extensions
 
 ```sql

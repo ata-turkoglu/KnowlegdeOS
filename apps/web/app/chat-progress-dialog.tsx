@@ -1,6 +1,7 @@
 "use client";
 
 import { chatWorkflowStages, type ChatProgress, type ChatWorkflowStageId } from "@knowledgeos/shared";
+import { useEffect, useRef } from "react";
 import { ADialog } from "../components/ui";
 import { useLanguage } from "./language-context";
 
@@ -18,6 +19,17 @@ const laneLabels = {
   control: { tr: "Kontrol", en: "Control" }
 } as const;
 
+function tokenUsageLabel(usage: ChatProgress["usage"], locale: "tr" | "en") {
+  if (!usage) return null;
+  const format = (value: number | undefined) => typeof value === "number" ? value.toLocaleString(locale === "tr" ? "tr-TR" : "en-US") : "—";
+  const source = usage.source === "provider"
+    ? (locale === "tr" ? "sağlayıcı" : "provider")
+    : (locale === "tr" ? "tahmini" : "estimated");
+  return locale === "tr"
+    ? `${format(usage.inputTokens)} giriş · ${format(usage.outputTokens)} çıkış · ${format(usage.totalTokens)} toplam token (${source})`
+    : `${format(usage.inputTokens)} input · ${format(usage.outputTokens)} output · ${format(usage.totalTokens)} total tokens (${source})`;
+}
+
 export function ChatProgressDialog({ visible, onHide, events, complete }: ChatProgressDialogProps) {
   const { language } = useLanguage();
   const locale = language === "en" ? "en" : "tr";
@@ -25,6 +37,12 @@ export function ChatProgressDialog({ visible, onHide, events, complete }: ChatPr
   const visited = new Set(events.map((event) => event.stage));
   const currentDefinition = chatWorkflowStages.find((stage) => stage.id === current?.stage);
   const currentIndex = events.length - 1;
+  const flowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const activeStep = flowRef.current?.querySelector(".chat-workflow__step.is-active");
+    activeStep?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [current?.stage]);
 
   function lastEventIndex(stageId: ChatWorkflowStageId) {
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -60,11 +78,13 @@ export function ChatProgressDialog({ visible, onHide, events, complete }: ChatPr
               : (currentDefinition?.label[locale] ?? (locale === "en" ? "Preparing request" : "İstek hazırlanıyor"))}
           </strong>
           <p>{current?.detail ?? current?.message ?? currentDefinition?.description[locale]}</p>
+          {tokenUsageLabel(current?.usage, locale) ? <small className="chat-progress-summary__usage">{tokenUsageLabel(current?.usage, locale)}</small> : null}
         </div>
       </div>
 
-      <div className="chat-workflow" role="list" aria-label={locale === "en" ? "Chat processing stages" : "Chat işlem aşamaları"}>
-        {chatWorkflowStages.map((stage, index) => {
+      <div className="chat-workflow-scroll" ref={flowRef}>
+        <div className="chat-workflow" role="list" aria-label={locale === "en" ? "Chat processing stages" : "Chat işlem aşamaları"}>
+          {chatWorkflowStages.map((stage, index) => {
           const state = stateFor(stage.id);
           return (
             <div className="chat-workflow__step-wrap" key={stage.id}>
@@ -87,11 +107,13 @@ export function ChatProgressDialog({ visible, onHide, events, complete }: ChatPr
                 ) : (
                   <p>{stage.description[locale]}</p>
                 )}
+                {state === "active" && current?.stage === stage.id && tokenUsageLabel(current.usage, locale) ? <small className="chat-workflow__usage">{tokenUsageLabel(current.usage, locale)}</small> : null}
               </article>
               {index < chatWorkflowStages.length - 1 ? <span className={`chat-workflow__arrow is-${state}`} aria-hidden="true"><i className="pi pi-arrow-right" /></span> : null}
             </div>
           );
-        })}
+          })}
+        </div>
       </div>
       <p className="chat-progress-dialog__note">
         {locale === "en"

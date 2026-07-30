@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@knowledgeos/shared": "workspace:*",
+    "@xyflow/react": "^12.11.2",
     "next": "^15.1.0",
     "primeicons": "^7.0.0",
     "primereact": "^10.9.7",

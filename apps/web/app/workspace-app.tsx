@@ -5,6 +5,7 @@ import { DocumentsPanel } from "./documents-panel";
 import { EntitiesPanel } from "./entities-panel";
 import { SearchPanel } from "./search-panel";
 import { UploadPanel } from "./upload-panel";
+import { ArchitectureMap } from "./architecture-map";
 
 export const sections = [
   { id: "dashboard", label: "Dashboard", icon: "pi-home" },
@@ -16,7 +17,7 @@ export const sections = [
   { id: "chat", label: "Chat", icon: "pi-comments" }
 ] as const;
 
-export type WorkspaceSectionId = (typeof sections)[number]["id"];
+export type WorkspaceSectionId = (typeof sections)[number]["id"] | "architecture";
 
 type WorkspaceAppProps = {
   activeSection: WorkspaceSectionId;
@@ -32,6 +33,7 @@ export function WorkspaceApp({ activeSection }: WorkspaceAppProps) {
       {activeSection === "chat" ? <ChatPanel /> : null}
       {activeSection === "upload" ? <UploadPanel /> : null}
       {activeSection === "convert" ? <ConversionPanel /> : null}
+      {activeSection === "architecture" ? <ArchitectureMap /> : null}
     </section>
   );
 }
