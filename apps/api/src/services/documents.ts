@@ -4,24 +4,26 @@ import { readFile, readdir, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 import type { SavedMultipartFile } from "@fastify/multipart";
-import { createDatabaseClient, documentChunks, documentEntities, documentFieldValues, documents, entities as entityTable, propertyReferences, relationships, workspaceFields, workspaces } from "@knowledgeos/database";
+import { claims, createDatabaseClient, documentChunks, documentEntities, documentFieldValues, documents, entities as entityTable, propertyReferences, relationships, workspaceFields, workspaces } from "@knowledgeos/database";
 import { buildEntityExtractionPrompt, type LLMExtractionResult } from "@knowledgeos/ai";
 import { ingestMarkdown, normalizeForSearch, parseMarkdownFrontmatter, type ExtractedEntity, type IngestionResult } from "@knowledgeos/ingestion";
 import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
 import { ensureWorkspaceStorage, getWorkspaceStoragePaths, writeFileAtomically, writeWorkspaceMetadata } from "./storage.js";
-import { replaceDocumentMetadataEntities, replaceDocumentPropertyReferences, type EntityAliasInput } from "./entities.js";
+import { replaceDocumentClaims, replaceDocumentEntities, replaceDocumentMetadataEntities, replaceDocumentPropertyReferences, replaceDocumentRelationships, type EntityAliasInput } from "./entities.js";
 import { getLlmProvider } from "./ai-providers.js";
 import { getWorkspaceIngestionSettings, matchesIngestionSettings, type WorkspaceIngestionSettings } from "./workspace-settings.js";
 import { ragRetrievalCache } from "./rag-cache.js";
-import { replaceDocumentFieldValues } from "./workspace-fields.js";
+import { canonicalizeDateValue, replaceDocumentFieldValues } from "./workspace-fields.js";
+import { inspectIngestionQuality, type IngestionQualityReport } from "./ingestion-quality.js";
+import { correctOcrChunks } from "./ocr-correction.js";
 
 const markdownExtensions = new Set([".md", ".txt"]); const originalExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"]);
 export type UploadedDocument = { workspaceSlug: string; documentName: string; filename: string; title: string; hash: string; markdownPath: string; sourceOriginalPath: string | null; metadataPath: string; status: "UPLOADED" };
-export type IndexedDocumentMetadata = Omit<UploadedDocument, "status"> & { status: "INDEXED"; indexedAt: string; ingestion: IngestionResult; ingestionSettings?: WorkspaceIngestionSettings; llmExtraction?: LLMExtractionResult; llmExtractionError?: string; summary?: string; indexCleared?: boolean };
+export type IndexedDocumentMetadata = Omit<UploadedDocument, "status"> & { status: "INDEXED"; indexedAt: string; ingestion: IngestionResult; quality: IngestionQualityReport; ingestionSettings?: WorkspaceIngestionSettings; llmExtraction?: LLMExtractionResult; llmExtractionError?: string; summary?: string; indexCleared?: boolean };
 export type DocumentListItem = { documentName: string; workspaceSlug: string; filename: string; title: string; status: "UPLOADED" | "INDEXED"; indexedAt: string | null; markdownPath: string; sourceOriginalPath: string | null; chunkCount: number; entityCount: number; hasLlmExtraction: boolean; llmExtractionError: string | null };
-export type DocumentDetail = DocumentListItem & { hash: string; summary: string | null; markdown: string; chunks: Array<{ chunkIndex: number; heading: string; tokenCount: number; content: string }>; entities: Array<{ type: string; value: string; confidence: number; source: string; evidenceSnippet: string }> };
+export type DocumentDetail = DocumentListItem & { hash: string; summary: string | null; markdown: string; quality: IngestionQualityReport; chunks: Array<{ chunkIndex: number; heading: string; tokenCount: number; content: string }>; entities: Array<{ type: string; value: string; confidence: number; source: string; evidenceSnippet: string }> };
 export type UploadConflict = { filename: string; documentName: string; status: "NEW" | "DUPLICATE" | "CONFLICT" };
 const safeFileName = (filename: string) => `${slugify(path.parse(filename).name)}${path.extname(filename).toLowerCase()}`;
 const safeOriginalFileName = (markdownFilename: string, originalFilename: string) => `${path.parse(safeFileName(markdownFilename)).name}${path.extname(originalFilename).toLowerCase()}`;
@@ -34,12 +36,7 @@ function listItem(row: typeof documents.$inferSelect, slug: string, chunks = 0, 
 function scalar(metadata: Record<string, string | string[]>, key: string) { const value = metadata[key]; return typeof value === "string" && value.trim() ? value.trim() : null; }
 function documentDate(metadata: Record<string, string | string[]>) {
   const value = scalar(metadata, "date");
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-
-  const [year, month, day] = value.split("-").map(Number);
-  const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1] ? value : null;
+  return value ? canonicalizeDateValue(value) : null;
 }
 function recoverFrontmatter(
   stored: unknown,
@@ -123,7 +120,7 @@ async function restoreFileSnapshot(filePath: string, contents: Buffer | null) {
 export async function checkUploadConflicts(config: ApiConfig, input: { workspaceSlug?: string; files: Array<{ filename: string; hash: string }> }): Promise<UploadConflict[]> { const slug = slugify(input.workspaceSlug?.trim() || "inbox"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); return Promise.all(input.files.map(async (file) => { const filename = safeFileName(file.filename); const [row] = await db.select().from(documents).where(and(eq(documents.workspaceId, ws.id), eq(documents.filename, filename))).limit(1); return !row || row.status === "UPLOADED" ? { filename: file.filename, documentName: nameOf(filename), status: "NEW" } : { filename: file.filename, documentName: nameOf(filename), status: row.hash === file.hash ? "DUPLICATE" : "CONFLICT" }; })); }); }
 export async function getStoredDocumentHash(config: ApiConfig, input: { workspaceSlug?: string; filename: string }) { const slug = slugify(input.workspaceSlug?.trim() || "inbox"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const filename = safeFileName(input.filename); const [row] = await db.select().from(documents).where(and(eq(documents.workspaceId, ws.id), eq(documents.filename, filename))).limit(1); return { documentName: nameOf(filename), hash: row?.status === "INDEXED" ? row.hash : null, status: row?.status === "INDEXED" ? row.status : null }; }); }
 export async function listStoredDocuments(config: ApiConfig, workspaceSlug: string): Promise<DocumentListItem[]> { const slug = slugify(workspaceSlug || "merter-arsivi"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const rows = await db.select({ document: documents, chunks: sql<number>`count(distinct ${documentChunks.id})`, entities: sql<number>`count(distinct ${documentEntities.id})` }).from(documents).leftJoin(documentChunks, eq(documentChunks.documentId, documents.id)).leftJoin(documentEntities, eq(documentEntities.documentId, documents.id)).where(eq(documents.workspaceId, ws.id)).groupBy(documents.id).orderBy(documents.filename); return rows.map((row) => listItem(row.document, slug, Number(row.chunks), Number(row.entities))); }); }
-export async function getStoredDocumentDetail(config: ApiConfig, input: { workspaceSlug: string; documentName: string }): Promise<DocumentDetail> { const slug = slugify(input.workspaceSlug || "merter-arsivi"), wanted = slugify(input.documentName); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const rows = await db.select().from(documents).where(eq(documents.workspaceId, ws.id)); const row = rows.find((item) => nameOf(item.filename) === wanted); if (!row) throw new HttpError(404, "Document not found."); const [chunks, entityRows, markdown] = await Promise.all([db.select().from(documentChunks).where(eq(documentChunks.documentId, row.id)).orderBy(documentChunks.chunkIndex), db.select({ type: workspaceFields.label, value: entityTable.canonicalValue, confidence: documentEntities.confidence, evidenceSnippet: documentEntities.evidenceSnippet, source: documentEntities.source }).from(documentEntities).innerJoin(entityTable, eq(entityTable.id, documentEntities.entityId)).innerJoin(workspaceFields, eq(workspaceFields.id, entityTable.fieldId)).where(eq(documentEntities.documentId, row.id)), readFile(row.markdownPath, "utf8")]); return { ...listItem(row, slug, chunks.length, entityRows.length), hash: row.hash, summary: row.summary, markdown, chunks: chunks.map((chunk) => ({ chunkIndex: chunk.chunkIndex, heading: chunk.heading ?? wanted, tokenCount: chunk.tokenCount, content: chunk.content })), entities: entityRows }; }); }
+export async function getStoredDocumentDetail(config: ApiConfig, input: { workspaceSlug: string; documentName: string }): Promise<DocumentDetail> { const slug = slugify(input.workspaceSlug || "merter-arsivi"), wanted = slugify(input.documentName); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const rows = await db.select().from(documents).where(eq(documents.workspaceId, ws.id)); const row = rows.find((item) => nameOf(item.filename) === wanted); if (!row) throw new HttpError(404, "Document not found."); const [chunks, entityRows, markdown] = await Promise.all([db.select().from(documentChunks).where(eq(documentChunks.documentId, row.id)).orderBy(documentChunks.chunkIndex), db.select({ type: workspaceFields.label, value: entityTable.canonicalValue, confidence: documentEntities.confidence, evidenceSnippet: documentEntities.evidenceSnippet, source: documentEntities.source }).from(documentEntities).innerJoin(entityTable, eq(entityTable.id, documentEntities.entityId)).innerJoin(workspaceFields, eq(workspaceFields.id, entityTable.fieldId)).where(eq(documentEntities.documentId, row.id)), readFile(row.markdownPath, "utf8")]); return { ...listItem(row, slug, chunks.length, entityRows.length), hash: row.hash, summary: row.summary, markdown, quality: inspectIngestionQuality(chunks as unknown as IngestionResult["chunks"]), chunks: chunks.map((chunk) => ({ chunkIndex: chunk.chunkIndex, heading: chunk.heading ?? wanted, tokenCount: chunk.tokenCount, content: chunk.content })), entities: entityRows }; }); }
 export async function getStoredDocumentStatuses(config: ApiConfig, input: { workspaceSlug: string; documentNames: string[] }) { const items = await listStoredDocuments(config, input.workspaceSlug); return input.documentNames.map((value) => ({ documentName: slugify(value), status: items.find((item) => item.documentName === slugify(value))?.status ?? "MISSING" as const })); }
 
 export async function storeUploadedDocument(config: ApiConfig, input: { workspaceSlug?: string; title?: string; markdownFile: SavedMultipartFile; originalFile?: SavedMultipartFile; signal?: AbortSignal }): Promise<UploadedDocument> {
@@ -218,7 +215,11 @@ export async function reindexStoredDocument(
     const storedMetadata = document.metadata && typeof document.metadata === "object" && !Array.isArray(document.metadata)
       ? document.metadata as Record<string, string | string[]>
       : {};
-    const ingestion = ingestMarkdown(markdown, { targetWords: settings.chunkSize, overlapWords: settings.chunkOverlap }, storedMetadata);
+    const initialIngestion = ingestMarkdown(markdown, { targetWords: settings.chunkSize, overlapWords: settings.chunkOverlap }, storedMetadata);
+    const initialQuality = inspectIngestionQuality(initialIngestion.chunks);
+    const correctedChunks = await correctOcrChunks(config, { chunks: initialIngestion.chunks, quality: initialQuality, signal: input.signal });
+    const ingestion = correctedChunks === initialIngestion.chunks ? initialIngestion : { ...initialIngestion, chunks: correctedChunks };
+    const quality = inspectIngestionQuality(ingestion.chunks);
     const preserveChunks = document.status === "INDEXED" && chunksMatch(existingChunks, ingestion.chunks);
     const reusableEmbeddings = new Map(existingChunks
       .filter((chunk) => chunk.embedding && chunk.embeddingModel)
@@ -264,10 +265,25 @@ export async function reindexStoredDocument(
       }));
     });
     input.onProgress?.("Updating entity index");
-    await replaceDocumentFieldValues(config, slug, document.id, ingestion.frontmatter);
+    await replaceDocumentFieldValues(config, slug, document.id, ingestion.frontmatter, { minYear: settings.dateMinYear, maxYear: settings.dateMaxYear });
     await replaceDocumentMetadataEntities(config, slug, document.id, ingestion.frontmatter);
     await replaceDocumentPropertyReferences(config, slug, document.id, ingestion.propertyReferences);
-    return { document, ingestion, settings };
+    let llmExtraction: LLMExtractionResult | undefined;
+    let llmExtractionError: string | undefined;
+    if (input.useLlm !== false) {
+      input.onProgress?.("Extracting evidence-backed claims");
+      try {
+        llmExtraction = await getLlmProvider(config, "extraction").generateJsonObject<LLMExtractionResult>(buildEntityExtractionPrompt(ingestion.content), input.signal);
+        const llm = llmEntities(llmExtraction, ingestion.content);
+        await replaceDocumentEntities(config, slug, document.id, [...ingestion.entities, ...llm.entities], llm.aliases);
+        await replaceDocumentRelationships(config, slug, document.id, llmExtraction.relationships ?? []);
+        await replaceDocumentClaims(config, slug, document.id, llmExtraction.claims ?? []);
+      } catch (error) {
+        llmExtractionError = error instanceof Error ? error.message.slice(0, 1_000) : "LLM extraction failed.";
+      }
+    }
+    await db.update(documents).set({ llmExtraction: llmExtraction ?? null, llmExtractionError: llmExtractionError ?? null, summary: llmExtraction?.summary || scalar(ingestion.frontmatter, "summary") }).where(eq(documents.id, document.id));
+    return { document, ingestion, quality, settings, llmExtraction, llmExtractionError };
   });
   ragRetrievalCache.invalidateWorkspace(slug);
   return {
@@ -275,6 +291,9 @@ export async function reindexStoredDocument(
     status: "INDEXED",
     indexedAt: new Date().toISOString(),
     ingestion: result.ingestion,
+    quality: result.quality,
+    llmExtraction: result.llmExtraction,
+    llmExtractionError: result.llmExtractionError,
     ingestionSettings: result.settings,
     summary: scalar(result.ingestion.frontmatter, "summary") ?? undefined
   };

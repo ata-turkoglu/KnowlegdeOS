@@ -211,7 +211,6 @@ function addFrontmatterEntities(
     { key: "organizations", type: "ORGANIZATION" },
     { key: "document_type", type: "DOCUMENT_TYPE" },
     { key: "date", type: "DATE" },
-    { key: "date_text", type: "DATE" },
     { key: "case_numbers", type: "CASE_NUMBER" },
     { key: "notary_numbers", type: "NOTARY_NUMBER" },
     { key: "keywords", type: "KEYWORD" }

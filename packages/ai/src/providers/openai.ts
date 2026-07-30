@@ -40,6 +40,7 @@ const extractionJsonSchema = {
     "organizations",
     "documentType",
     "relationships",
+    "claims",
     "summary"
   ],
   properties: {
@@ -72,6 +73,18 @@ const extractionJsonSchema = {
           relation: { type: "string" },
           target: { type: "string" },
           evidence: { type: "string" }
+        }
+      }
+    },
+    claims: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["subject", "predicate", "object", "date", "dateStart", "dateEnd", "dateText", "evidence"],
+        properties: {
+          subject: { type: "string" }, predicate: { type: "string" }, object: { type: "string" },
+          date: { type: ["string", "null"] }, dateStart: { type: ["string", "null"] }, dateEnd: { type: ["string", "null"] }, dateText: { type: ["string", "null"] }, evidence: { type: "string" }
         }
       }
     },

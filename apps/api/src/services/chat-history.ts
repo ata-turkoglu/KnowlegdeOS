@@ -119,6 +119,17 @@ export async function listChatSessions(
   });
 }
 
+export async function getChatSessionMessages(config: ApiConfig, input: { workspaceSlug: string; sessionId: string; limit?: number }): Promise<StoredChatMessage[]> {
+  return withDatabase(config, async (db) => {
+    const workspaceId = await workspaceIdForSlug(db, input.workspaceSlug);
+    const [session] = await db.select({ id: chatSessions.id }).from(chatSessions)
+      .where(and(eq(chatSessions.id, input.sessionId), eq(chatSessions.workspaceId, workspaceId))).limit(1);
+    if (!session) throw new HttpError(404, "Chat session not found.");
+    const rows = await db.select().from(chatMessages).where(eq(chatMessages.sessionId, session.id)).orderBy(desc(chatMessages.createdAt)).limit(input.limit ?? 16);
+    return orderChatMessages(rows.reverse().map((message) => ({ id: message.id, role: message.role, content: message.content, createdAt: message.createdAt.toISOString(), queryType: message.queryType, sources: asSources(message.sourcesJson) })));
+  });
+}
+
 export async function saveChatExchange(
   config: ApiConfig,
   input: { workspaceSlug: string; sessionId?: string; message: string; response: ChatResponse }

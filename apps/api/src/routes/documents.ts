@@ -241,7 +241,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
     };
     batchReindexOperations.set(operationId, operation);
     activeBatchReindexOperations.set(request.params.workspaceSlug, operationId);
-    const persisted = await createOperation(config, { workspaceSlug: request.params.workspaceSlug, kind: "index", targetName: documentNames.join(", "), documentNames, status: "running", stage: "Preparing document", progress: 0, retry: { useLlm: request.body?.useLlm === true } });
+    const persisted = await createOperation(config, { workspaceSlug: request.params.workspaceSlug, kind: "index", targetName: documentNames.join(", "), documentNames, status: "running", stage: "Preparing document", progress: 0, retry: { useLlm: request.body?.useLlm !== false } });
 
     void (async () => {
       try {
@@ -253,7 +253,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
           await reindexStoredDocument(config, {
             workspaceSlug: request.params.workspaceSlug,
             documentName,
-            useLlm: request.body?.useLlm === true,
+            useLlm: request.body?.useLlm !== false,
             signal: operation.controller.signal,
             invalidateSemanticIndex: false,
             onProgress: (stage) => void updateOperation(config, request.params.workspaceSlug, persisted.id, { stage })
@@ -449,7 +449,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
         status: "running",
         stage: "Starting reindexing",
         progress: 0,
-        retry: { documentName: request.params.documentName, useLlm: request.body?.useLlm === true }
+        retry: { documentName: request.params.documentName, useLlm: request.body?.useLlm !== false }
       });
       request.raw.once("aborted", abort);
       updateReindexOperation(resolvedOperationId, {
@@ -461,7 +461,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
         const document = await reindexStoredDocument(config, {
           workspaceSlug: request.params.workspaceSlug,
           documentName: request.params.documentName,
-          useLlm: request.body?.useLlm === true,
+          useLlm: request.body?.useLlm !== false,
           signal: controller.signal,
           onProgress: (stage) => {
             updateReindexOperation(resolvedOperationId, { stage, status: "running" });

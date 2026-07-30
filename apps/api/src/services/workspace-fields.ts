@@ -31,10 +31,13 @@ const nonEntityKeys = new Set([
   "date_range_start", "date_range_end"
 ]);
 const nonFilterableKeys = new Set(["summary", "notes", "source_original", "source_file"]);
+const internalMetadataKeys = new Set(["metadata_evidence"]);
 const dateKeys = new Set(["date", "date_range_start", "date_range_end"]);
 const fieldEmbeddingCache = new Map<string, number[]>();
+/** Modern archive guardrail: rejects OCR fragments such as `0974-10-24`. */
+export const archivalDateBounds = { minYear: 1800, maxYear: new Date().getUTCFullYear() };
 
-export function canonicalizeDateValue(value: string) {
+export function canonicalizeDateValue(value: string, bounds = archivalDateBounds) {
   const trimmed = value.trim();
   const iso = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   const local = trimmed.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
@@ -44,6 +47,7 @@ export function canonicalizeDateValue(value: string) {
       ? { year: Number(local[3]), month: Number(local[2]), day: Number(local[1]) }
       : null;
   if (!parts) return null;
+  if (parts.year < bounds.minYear || parts.year > bounds.maxYear) return null;
   const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
   if (date.getUTCFullYear() !== parts.year || date.getUTCMonth() !== parts.month - 1 || date.getUTCDate() !== parts.day) return null;
   return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
@@ -215,7 +219,8 @@ async function ensureWorkspace(
 export async function registerWorkspaceMetadataFields(
   config: ApiConfig,
   workspaceSlug: string,
-  metadata: DynamicMetadata
+  metadata: DynamicMetadata,
+  dateBounds = archivalDateBounds
 ) {
   const client = createDatabaseClient(config.databaseUrl);
   try {
@@ -227,8 +232,12 @@ export async function registerWorkspaceMetadataFields(
 
       for (const [rawKey, value] of Object.entries(metadata)) {
         const key = normalizeMetadataKey(rawKey);
-        if (!key) continue;
-        const canonicalValue = canonicalizeMetadataValue(key, value);
+        if (!key || internalMetadataKeys.has(key)) continue;
+        const canonicalValue = dateKeys.has(key)
+          ? (Array.isArray(value)
+            ? value.map((item) => typeof item === "string" ? canonicalizeDateValue(item, dateBounds) ?? item.trim() : item)
+            : typeof value === "string" ? canonicalizeDateValue(value, dateBounds) ?? value.trim() : value)
+          : canonicalizeMetadataValue(key, value);
         const incomingType = inferMetadataValueType(key, canonicalValue);
         const existing = await resolveExistingField(config, key, incomingType, known);
         if (existing) {
@@ -322,9 +331,10 @@ export async function replaceDocumentFieldValues(
   config: ApiConfig,
   workspaceSlug: string,
   documentId: string,
-  metadata: DynamicMetadata
+  metadata: DynamicMetadata,
+  dateBounds = archivalDateBounds
 ) {
-  const registered = await registerWorkspaceMetadataFields(config, workspaceSlug, metadata);
+  const registered = await registerWorkspaceMetadataFields(config, workspaceSlug, metadata, dateBounds);
   const fieldByKey = new Map(registered.fields.map((field) => [field.key, field]));
   const client = createDatabaseClient(config.databaseUrl);
   try {
@@ -343,7 +353,7 @@ export async function replaceDocumentFieldValues(
             ordinal,
             textValue,
             normalizedValue: normalizeForSearch(textValue),
-            dateValue: field.valueType === "DATE" && /^\d{4}-\d{2}-\d{2}$/.test(textValue) ? textValue : null,
+            dateValue: field.valueType === "DATE" ? canonicalizeDateValue(textValue, dateBounds) : null,
             numberValue: typeof value === "number" ? value : null,
             booleanValue: typeof value === "boolean" ? value : null
           }];

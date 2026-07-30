@@ -2,7 +2,7 @@ import type { ApiConfig } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
 import { ensureWorkspaceStorage, readWorkspaceMetadata, writeWorkspaceMetadata } from "./storage.js";
 
-export const defaultChatSystemPrompt = `Önce kullanıcının doğrudan istediği bilgiyi yanıtla. İlgisiz belgeleri veya arka planı özetleme. Kullanıcının istemediği ayrıntıları ekleme. İstenen bilgi kaynaklarda yoksa bunu açıkça belirt.`;
+export const defaultChatSystemPrompt = `Answer the user's specific request first. Do not summarize unrelated documents or background. Omit details the user did not request. If the supplied sources do not contain the requested information, say so explicitly. Match the language of the user's question.`;
 
 export async function getWorkspaceChatSystemPrompt(config: ApiConfig, workspaceSlugInput: string) {
   const paths = await ensureWorkspaceStorage(config.storageRoot, slugify(workspaceSlugInput));

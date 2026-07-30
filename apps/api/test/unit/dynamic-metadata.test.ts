@@ -29,6 +29,9 @@ test("metadata field types widen without dropping values", () => {
 test("localized metadata dates canonicalize to sortable ISO values", () => {
   assert.equal(canonicalizeDateValue("18.01.1985"), "1985-01-18");
   assert.equal(canonicalizeDateValue("31/02/1985"), null);
+  assert.equal(canonicalizeDateValue("0974-10-24"), null);
+  assert.equal(canonicalizeDateValue("1973-05"), null);
+  assert.equal(canonicalizeDateValue("21.08.1927"), "1927-08-21");
 });
 
 test("long operational values stay out of the entity index", () => {

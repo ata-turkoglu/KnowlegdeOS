@@ -2,7 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ApiConfig } from "../config/env.js";
 import { isHttpError } from "../lib/http-errors.js";
 import { answerChat, type ChatAnswerLength } from "../services/chat.js";
-import { deleteChatSession, listChatSessions, saveChatExchange } from "../services/chat-history.js";
+import { deleteChatSession, getChatSessionMessages, listChatSessions, saveChatExchange } from "../services/chat-history.js";
+import { summarizeConversationMemory } from "../services/conversation-memory.js";
 
 const defaultWorkspaceSlug = "merter-arsivi";
 const workspaceSlugSchema = {
@@ -45,6 +46,7 @@ export type ChatRouteDependencies = {
   deleteChatSession: typeof deleteChatSession;
   listChatSessions: typeof listChatSessions;
   saveChatExchange: typeof saveChatExchange;
+  getChatSessionMessages: typeof getChatSessionMessages;
 };
 
 type ErrorWithCode = Error & { code?: string };
@@ -161,6 +163,7 @@ export async function registerChatRoutes(
     deleteChatSession,
     listChatSessions,
     saveChatExchange,
+    getChatSessionMessages,
     ...overrides
   };
 
@@ -245,14 +248,19 @@ export async function registerChatRoutes(
         reply.raw.flushHeaders?.();
         await writeRaw(reply, ": connected\n\n");
         await writeEvent(reply, "status", "Kaynaklar aranıyor ve yanıt hazırlanıyor…");
+        await writeEvent(reply, "progress", { stage: "received" });
 
         heartbeat = setInterval(() => {
           void writeRaw(reply, ": working\n\n");
         }, 15_000);
 
+        await writeEvent(reply, "progress", { stage: "history" });
+        const history = request.body.sessionId ? await dependencies.getChatSessionMessages(config, { workspaceSlug, sessionId: request.body.sessionId }) : [];
+        const conversationMemory = await summarizeConversationMemory(config, { messages: history, signal: requestAbort.signal });
         const response = await dependencies.answerChat(config, {
           workspaceSlug,
           message,
+          conversationMemory,
           answerLength: request.body.answerLength,
           signal: requestAbort.signal,
           onProgress: async (progress) => {
@@ -284,9 +292,12 @@ export async function registerChatRoutes(
         return;
       }
 
+      const history = request.body.sessionId ? await dependencies.getChatSessionMessages(config, { workspaceSlug, sessionId: request.body.sessionId }) : [];
+      const conversationMemory = await summarizeConversationMemory(config, { messages: history, signal: requestAbort.signal });
       const response = await dependencies.answerChat(config, {
         workspaceSlug,
         message,
+        conversationMemory,
         answerLength: request.body.answerLength,
         signal: requestAbort.signal
       });

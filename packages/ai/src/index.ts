@@ -59,6 +59,17 @@ export type LLMRelationship = {
   evidence: string;
 };
 
+export type LLMClaim = {
+  subject: string;
+  predicate: string;
+  object: string;
+  date: string | null;
+  dateStart: string | null;
+  dateEnd: string | null;
+  dateText: string | null;
+  evidence: string;
+};
+
 export type LLMExtractionResult = {
   people: string[];
   aliases: Array<{
@@ -71,6 +82,7 @@ export type LLMExtractionResult = {
   organizations: string[];
   documentType: string | null;
   relationships: LLMRelationship[];
+  claims: LLMClaim[];
   summary: string;
 };
 

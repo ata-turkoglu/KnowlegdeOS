@@ -34,6 +34,11 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+    environment:
+      # Keep the 4 GB GPU from being overcommitted by an embedding and a chat
+      # model at the same time. Ollama unloads the previous model when needed.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
     ports:
       - "11434:11434"
     volumes:
@@ -56,11 +61,11 @@ services:
     image: ollama/ollama:latest
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:8b}
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:4b}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - ollama pull "$${OLLAMA_LLM_MODEL:-qwen3:8b}" && ollama pull "$${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}"
+      - ollama pull "$${OLLAMA_LLM_MODEL:-qwen3:4b}" && ollama pull "$${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}"
     depends_on:
       ollama:
         condition: service_healthy
@@ -69,6 +74,15 @@ services:
   api:
     build:
       context: .
+    deploy:
+      resources:
+        reservations:
+          devices:
+            # Telemetry only: lets the settings API detect the host GPU. Model
+            # execution remains in the Ollama service.
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     command:
       - corepack
       - pnpm
@@ -78,9 +92,12 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/knowledgeos
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:8b}
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3:4b}
       OLLAMA_LLM_TIMEOUT_MS: ${OLLAMA_LLM_TIMEOUT_MS:-0}
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+      SMALL_QUERY_NORMALIZER_MODEL: ${SMALL_QUERY_NORMALIZER_MODEL:-qwen3:4b}
+      SMALL_QUERY_ANALYZER_MODEL: ${SMALL_QUERY_ANALYZER_MODEL:-qwen3:4b}
+      SMALL_EVIDENCE_PREPARER_MODEL: ${SMALL_EVIDENCE_PREPARER_MODEL:-qwen3:4b}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3:latest}
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}

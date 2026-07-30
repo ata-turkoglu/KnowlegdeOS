@@ -303,6 +303,38 @@ export const relationships = pgTable(
   })
 );
 
+/** A source-grounded statement or event. Unlike entity-to-entity graph edges,
+ * claims may carry a literal object and a temporal interval. */
+export const claims = pgTable(
+  "claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
+    chunkId: uuid("chunk_id").references(() => documentChunks.id, { onDelete: "set null" }),
+    subjectEntityId: uuid("subject_entity_id").references(() => entities.id, { onDelete: "set null" }),
+    subjectText: text("subject_text").notNull(),
+    predicate: text("predicate").notNull(),
+    objectEntityId: uuid("object_entity_id").references(() => entities.id, { onDelete: "set null" }),
+    objectText: text("object_text").notNull(),
+    eventDate: date("event_date"),
+    eventDateStart: date("event_date_start"),
+    eventDateEnd: date("event_date_end"),
+    dateText: text("date_text"),
+    evidenceSnippet: text("evidence_snippet").notNull(),
+    confidence: real("confidence").notNull().default(0.8),
+    origin: text("origin").notNull().default("LLM"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    workspaceIdIdx: index("claims_workspace_id_idx").on(table.workspaceId),
+    documentIdIdx: index("claims_document_id_idx").on(table.documentId),
+    subjectEntityIdIdx: index("claims_subject_entity_id_idx").on(table.subjectEntityId),
+    predicateIdx: index("claims_predicate_idx").on(table.predicate),
+    eventDateIdx: index("claims_event_date_idx").on(table.eventDate)
+  })
+);
+
 export const propertyReferences = pgTable(
   "property_references",
   {

@@ -4,7 +4,8 @@ import path from "node:path";
 
 export type LlmTemperatureProfile = "extraction" | "answer" | "summary" | "creative";
 export type LlmTemperatures = Record<LlmTemperatureProfile, number>;
-export type SmallModelRole = "entityLinker" | "reranker" | "fieldMatcher";
+export type HybridApiProvider = "none" | "openai" | "gemini" | "anthropic";
+export type SmallModelRole = "queryNormalizer" | "queryAnalyzer" | "ocrCorrector" | "conversationSummary" | "evidencePreparer" | "contradictionDetector" | "entityLinker" | "reranker" | "fieldMatcher";
 
 function temperature(value: string | undefined, fallback: number) {
   return Math.max(0, Math.min(2, Number(value ?? fallback)));
@@ -43,6 +44,7 @@ export type ApiConfig = {
   openaiApiKey: string;
   openaiLlmModel: string;
   openaiEmbeddingModel: string;
+  metadataLlmModel: string;
   geminiApiKey: string;
   geminiLlmModel: string;
   geminiEmbeddingModel: string;
@@ -51,7 +53,15 @@ export type ApiConfig = {
   anthropicBaseUrl: string;
   entityLinkerModel: string;
   rerankerModel: string;
+  queryNormalizerModel: string;
+  queryAnalyzerModel: string;
+  ocrCorrectorModel: string;
+  conversationSummaryModel: string;
+  evidencePreparerModel: string;
+  contradictionDetectorModel: string;
   fieldMatcherModel: string;
+  hybridApiProvider: HybridApiProvider;
+  hybridApiModel: string;
   llmContextCacheEnabled: boolean;
   llmContextCacheLogUsage: boolean;
   /** 0 selects an automatic model-aware RAG input budget. */
@@ -73,18 +83,13 @@ export function loadConfig(): ApiConfig {
       ? process.env.GEMINI_LLM_MODEL ?? "gemini-2.5-flash"
       : llmProvider === "anthropic"
         ? process.env.ANTHROPIC_LLM_MODEL ?? "claude-sonnet-4-20250514"
-        : process.env.OLLAMA_LLM_MODEL ?? "qwen3:8b";
-  const defaultEmbeddingModel = embeddingProvider === "openai"
-    ? process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small"
-    : embeddingProvider === "gemini"
-      ? process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2"
-      : process.env.OLLAMA_EMBEDDING_MODEL ?? "bge-m3:latest";
+        : process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b";
   return {
     databaseUrl:
       process.env.DATABASE_URL ??
       "postgresql://postgres:postgres@localhost:5432/knowledgeos",
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
-    ollamaLlmModel: process.env.OLLAMA_LLM_MODEL ?? "qwen3:8b",
+    ollamaLlmModel: process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
     ollamaLlmTimeoutMs: Number(process.env.OLLAMA_LLM_TIMEOUT_MS ?? 0),
     ollamaKeepAlive: optionalSetting(process.env.OLLAMA_KEEP_ALIVE, "5m"),
     // 0 disables the timeout. A cold local model can legitimately take a long time to load.
@@ -103,15 +108,24 @@ export function loadConfig(): ApiConfig {
     openaiApiKey: process.env.OPENAI_API_KEY ?? "",
     openaiLlmModel: process.env.OPENAI_LLM_MODEL ?? "gpt-4.1-mini",
     openaiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    metadataLlmModel: process.env.METADATA_LLM_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     geminiLlmModel: process.env.GEMINI_LLM_MODEL ?? "gemini-2.5-flash",
     geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2",
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
     anthropicLlmModel: process.env.ANTHROPIC_LLM_MODEL ?? "claude-sonnet-4-20250514",
     anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
-    entityLinkerModel: process.env.SMALL_ENTITY_LINKER_MODEL ?? defaultLlmModel,
-    rerankerModel: process.env.SMALL_RERANKER_MODEL ?? defaultLlmModel,
-    fieldMatcherModel: process.env.SMALL_FIELD_MATCHER_MODEL ?? defaultEmbeddingModel,
+    entityLinkerModel: process.env.SMALL_ENTITY_LINKER_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    rerankerModel: process.env.SMALL_RERANKER_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    queryNormalizerModel: process.env.SMALL_QUERY_NORMALIZER_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    queryAnalyzerModel: process.env.SMALL_QUERY_ANALYZER_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    ocrCorrectorModel: process.env.SMALL_OCR_CORRECTOR_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    conversationSummaryModel: process.env.SMALL_CONVERSATION_SUMMARY_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    evidencePreparerModel: process.env.SMALL_EVIDENCE_PREPARER_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    contradictionDetectorModel: process.env.SMALL_CONTRADICTION_DETECTOR_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    fieldMatcherModel: process.env.SMALL_FIELD_MATCHER_MODEL ?? process.env.OLLAMA_EMBEDDING_MODEL ?? "bge-m3:latest",
+    hybridApiProvider: (["openai", "gemini", "anthropic"] as const).includes(process.env.HYBRID_API_PROVIDER as "openai") ? process.env.HYBRID_API_PROVIDER as Exclude<HybridApiProvider, "none"> : "none",
+    hybridApiModel: process.env.HYBRID_API_MODEL ?? "",
     llmContextCacheEnabled: enabled(process.env.LLM_CONTEXT_CACHE_ENABLED, true),
     llmContextCacheLogUsage: enabled(process.env.LLM_CONTEXT_CACHE_LOG_USAGE, true),
     ragSoftInputTokens: Math.max(0, Number(process.env.RAG_SOFT_INPUT_TOKENS ?? 0)),
