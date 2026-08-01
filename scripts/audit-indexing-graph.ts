@@ -1,5 +1,7 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createDatabaseClient } from '../packages/database/src/client.ts';
+import { loadConfig } from '../apps/api/src/config/env.ts';
 
 type StageDecision = { required?: boolean; execution?: string; provider?: string; model?: string };
 type StageResult = { status?: string; inputCandidateCount?: number; acceptedCount?: number; rejectedCount?: number; rejectionCounts?: Record<string, number> };
@@ -26,6 +28,7 @@ function option(name: string) {
 const root = option('--root') ?? 'storage/workspaces';
 const output = option('--output');
 const format = option('--format') ?? 'json';
+const includeDatabase = process.argv.includes('--database');
 
 async function walk(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
@@ -56,11 +59,34 @@ function inspectRecord(findings: Finding[], operationFile: string, operation: Op
   }
 }
 
-function toText(report: { root: string; operationFilesScanned: number; operationsScanned: number; documentRecordsScanned: number; findingCount: number; findings: Finding[] }) {
+async function inspectDatabase(findings: Finding[]) {
+  const config = loadConfig();
+  const client = createDatabaseClient(config.databaseUrl);
+  try {
+    const [staleAliases, staleRelationships, orphanEntities] = await Promise.all([
+      client.db.execute("select ea.id, ea.document_id from entity_aliases ea left join documents d on d.id = ea.document_id where ea.source = 'LLM' and (ea.document_id is null or d.id is null)"),
+      client.db.execute("select r.id, r.document_id from relationships r left join documents d on d.id = r.document_id where r.origin = 'LLM' and (r.document_id is null or d.id is null)"),
+      client.db.execute("select e.id from entities e left join document_entities de on de.entity_id = e.id left join entity_aliases ea on ea.entity_id = e.id left join relationships rs on rs.source_entity_id = e.id left join relationships rt on rt.target_entity_id = e.id where de.id is null and ea.id is null and rs.id is null and rt.id is null")
+    ]);
+    const rowsOf = (result: unknown): Array<{ id: string }> => Array.isArray(result) ? result as Array<{ id: string }> : (result as { rows?: Array<{ id: string }> }).rows ?? [];
+    const aliasRows = rowsOf(staleAliases);
+    const relationshipRows = rowsOf(staleRelationships);
+    const orphanRows = rowsOf(orphanEntities);
+    for (const row of aliasRows) findings.push({ operationFile: 'database', issue: 'stale_llm_alias_without_document', detail: String(row.id) });
+    for (const row of relationshipRows) findings.push({ operationFile: 'database', issue: 'stale_llm_relationship_without_document', detail: String(row.id) });
+    for (const row of orphanRows) findings.push({ operationFile: 'database', issue: 'orphan_entity_without_graph_reference', detail: String(row.id) });
+    return { inspected: true, staleAliases: aliasRows.length, staleRelationships: relationshipRows.length, orphanEntities: orphanRows.length };
+  } finally {
+    await client.close();
+  }
+}
+
+function toText(report: { root: string; operationFilesScanned: number; operationsScanned: number; documentRecordsScanned: number; findingCount: number; findings: Finding[]; database?: { inspected: boolean; staleAliases: number; staleRelationships: number; orphanEntities: number } }) {
   const lines = [
     `Indexing graph audit: ${report.findingCount} finding(s) across ${report.operationsScanned} operation(s) and ${report.documentRecordsScanned} document record(s).`,
     `Root: ${report.root}`
   ];
+  if (report.database) lines.push(`Database: ${report.database.staleAliases} stale LLM alias(es), ${report.database.staleRelationships} stale LLM relationship(s), ${report.database.orphanEntities} orphan entity record(s).`);
   for (const finding of report.findings) {
     lines.push(`- ${finding.issue}${finding.documentName ? ` [${finding.documentName}]` : ''}${finding.detail ? `: ${finding.detail}` : ''} (${finding.operationFile}${finding.operationId ? `, ${finding.operationId}` : ''})`);
   }
@@ -87,7 +113,8 @@ async function main() {
       }
     }
   }
-  const report = { root, operationFilesScanned: operationFiles.length, operationsScanned, documentRecordsScanned, findingCount: findings.length, findings };
+  const database = includeDatabase ? await inspectDatabase(findings) : undefined;
+  const report = { root, operationFilesScanned: operationFiles.length, operationsScanned, documentRecordsScanned, database, findingCount: findings.length, findings };
   const text = format === 'text' ? toText(report) : `${JSON.stringify(report, null, 2)}\n`;
   if (output) await writeFile(output, text, 'utf8');
   process.stdout.write(text);
