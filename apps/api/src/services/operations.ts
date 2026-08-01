@@ -7,12 +7,20 @@ import { ensureWorkspaceStorage, getWorkspaceStoragePaths, resolveStorageRoot, w
 
 export type OperationKind = "upload" | "index" | "reindex" | "embedding" | "yaml";
 export type OperationStatus = "running" | "completed" | "partial" | "completed_with_warnings" | "failed" | "cancelled" | "interrupted";
+export type DocumentIndexingRecord = {
+  indexingPlan?: IndexingPlan;
+  stageResults?: Record<string, IndexingStageResult>;
+  traceId?: string;
+};
 export type StoredOperation = {
   id: string; workspaceSlug: string; kind: OperationKind; targetName: string;
   status: OperationStatus; stage: string; progress: number; error?: string;
   documentNames?: string[];
   /** Legacy useLlm is read-only compatibility for history written before plan v1. */
-  retry?: { documentName?: string; useLlm?: boolean; mode?: 'automatic' | 'user_configured' }; indexingPlan?: IndexingPlan; stageResults?: Record<string, IndexingStageResult>; traceId?: string; createdAt: string; updatedAt: string; completedAt?: string;
+  retry?: { documentName?: string; useLlm?: boolean; mode?: 'automatic' | 'user_configured' }; indexingPlan?: IndexingPlan; stageResults?: Record<string, IndexingStageResult>; traceId?: string;
+  /** Per-document execution records are required for batch auditability. */
+  documentIndexing?: Record<string, DocumentIndexingRecord>;
+  createdAt: string; updatedAt: string; completedAt?: string;
 };
 
 const fileName = "operations.json";

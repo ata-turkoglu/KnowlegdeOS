@@ -14,7 +14,7 @@ import {
   storeUploadedDocument
 } from "../services/documents.js";
 import { getConvertedFile } from "../services/conversions.js";
-import { cancelTrackedOperation, clearOperationHistory, createOperation, findRunningOperation, interruptAllRunningOperations, listOperations, updateOperation } from "../services/operations.js";
+import { cancelTrackedOperation, clearOperationHistory, createOperation, findRunningOperation, interruptAllRunningOperations, listOperations, updateOperation, type DocumentIndexingRecord } from "../services/operations.js";
 import type { IndexingRequestMode, IndexingStageName } from "../services/indexing-plan.js";
 import { getGpuMetrics } from "../services/gpu.js";
 import { embedSelectedDocuments, getEmbeddingCoverage, invalidateSemanticIndex } from "../services/semantic-search.js";
@@ -262,6 +262,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
     void (async () => {
       try {
         const indexedDocumentNames: string[] = [];
+        const documentIndexing: Record<string, DocumentIndexingRecord> = {};
         let partial = false;
         for (const documentName of documentNames) {
           if (operation.controller.signal.aborted) break;
@@ -275,7 +276,8 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
             invalidateSemanticIndex: false,
             onProgress: (stage) => void updateOperation(config, request.params.workspaceSlug, persisted.id, { stage })
           });
-          await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: indexed.indexingPlan, stageResults: indexed.stageResults, traceId: indexed.traceId });
+          documentIndexing[documentName] = { indexingPlan: indexed.indexingPlan, stageResults: indexed.stageResults, traceId: indexed.traceId };
+          await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: indexed.indexingPlan, stageResults: indexed.stageResults, traceId: indexed.traceId, documentIndexing });
           partial ||= Boolean(indexed.llmExtractionError) || Object.values(indexed.stageResults ?? {}).some((stage) => stage.status === 'succeeded_with_warnings');
           operation.completed += 1;
           indexedDocumentNames.push(documentName);
@@ -485,7 +487,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
             void updateOperation(config, request.params.workspaceSlug, persisted.id, { stage, progress: stage === "Completed" ? 100 : 50 });
           }
         });
-        await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: document.indexingPlan, stageResults: document.stageResults, traceId: document.traceId });
+        await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: document.indexingPlan, stageResults: document.stageResults, traceId: document.traceId, documentIndexing: { [request.params.documentName]: { indexingPlan: document.indexingPlan, stageResults: document.stageResults, traceId: document.traceId } } });
 
         updateReindexOperation(resolvedOperationId, {
           stage: controller.signal.aborted ? "Cancelled" : "Completed",
