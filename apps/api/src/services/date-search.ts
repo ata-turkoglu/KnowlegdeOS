@@ -86,14 +86,12 @@ export function inferDateSearchMode(
   query: string,
   hasExplicitDate = Boolean(extractDateSearchVariants(query)),
 ): DateSearchMode {
-  if (!hasExplicitDate) return 'BOTH';
-
   const normalized = normalizeForSearch(query);
   const documentSignal =
     /\b(documents? dated|dated documents?|document date|how many documents?|count documents?|list documents?|issued on (?:this|that) date)\b/u.test(
       normalized,
     ) ||
-    /\b(belge tarihi|tarihli belgeler?|belgeler? tarihli|kac(?: adet)? belge|belgeleri listele|bu tarihte duzenlenen)\b/u.test(
+    /\b(belge tarihi|tarihli|belgeler? tarihli|kac(?: adet)? belge|belgeleri listele|bu tarihte duzenlenen)\b/u.test(
       normalized,
     );
   const contentSignal =
@@ -103,6 +101,10 @@ export function inferDateSearchMode(
     /\b(ne oldu|hangi olay|olay oldu mu|ne gerceklesti|kim vefat etti|kim oldu|kim dogdu|hangi islem yapildi)\b/u.test(
       normalized,
     );
+
+  // A bare archival year (for example "2024 tarihli belgeler") is still a
+  // document-metadata request even though it cannot be normalized to a day.
+  if (!hasExplicitDate) return documentSignal ? 'DOCUMENT_DATE' : 'BOTH';
 
   if (documentSignal && contentSignal) return 'BOTH';
   if (documentSignal) return 'DOCUMENT_DATE';

@@ -47,7 +47,7 @@ export function extractLabeledNumericAnchors(
     const patterns = [
       new RegExp(`\\b(\\d+(?:[/-]\\d+)?)\\s+${label}\\b`, 'gu'),
       new RegExp(
-        `\\b${label}(?:\\s+(?:no|numara|numarali))?\\s+(\\d+(?:[/-]\\d+)?)\\b`,
+        `\\b${label}(?:\\s+(?:no|numara|numarali))?\\s+(\\d+(?:[/-]\\d+)?)(?!\\s+(?:ada|pafta|parsel)\\b)\\b`,
         'gu',
       ),
     ];

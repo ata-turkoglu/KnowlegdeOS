@@ -86,6 +86,12 @@ test("deterministic query fallback locks exact dynamic metadata values", () => {
   assert.deepEqual(result.matchedEntityIds, ["entity-mehmet"]);
 });
 
+test("event-date questions do not apply a document-date metadata filter", () => {
+  const field = { id: 'field-date', workspaceId: 'workspace', key: 'date', label: 'Date', valueType: 'DATE' as const, filterable: true, entityEnabled: false, searchable: true, aliases: [] };
+  const result = deterministicAnalysis('12.06.1974 tarihinde ne olmuştu?', [field]);
+  assert.deepEqual(result.filters, []);
+});
+
 test("filter relaxation removes only low-confidence LLM filters", () => {
   const base = deterministicAnalysis("belgeler", [], []);
   const locked = { fieldId: "a", fieldKey: "date", operator: "EQ" as const, value: "2024", source: "RULE" as const, confidence: 1, locked: true };
