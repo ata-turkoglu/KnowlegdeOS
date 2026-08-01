@@ -522,7 +522,7 @@ export function UploadPanel() {
       const documents: UploadedDocument[] = markdownFiles.length === 1 ? [body] : body.documents;
       setUploadedDocuments(documents);
       writeUploadOperation({ workspaceSlug, status: "uploaded", fileNames, documents });
-      await indexUploadedDocuments(false, documents);
+      await indexUploadedDocuments(documents);
       setMessage(isEnglish ? `${documents.length} document(s) uploaded and ready to index.` : `${documents.length} belge yüklendi. İndeksleme için hazır.`);
     } catch (error) {
       clearUploadOperation();
@@ -535,7 +535,7 @@ export function UploadPanel() {
     }
   }
 
-  async function indexUploadedDocuments(useLlm: boolean, documentsToIndex = uploadedDocuments) {
+  async function indexUploadedDocuments(documentsToIndex = uploadedDocuments) {
     if (documentsToIndex.length === 0) {
       setMessage(isEnglish ? "Upload a Markdown file first." : "Önce Markdown dosyasını yükle.");
       return;
@@ -551,7 +551,7 @@ export function UploadPanel() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify({ documentNames: documentsToIndex.map((document) => document.documentName), useLlm })
+          body: JSON.stringify({ documentNames: documentsToIndex.map((document) => document.documentName), mode: "automatic" })
         }
       );
       const body = await response.json() as { operationId?: string; error?: string };
@@ -697,14 +697,14 @@ export function UploadPanel() {
               <AButton
                 type="button"
                 tone="secondary"
-                onClick={() => indexUploadedDocuments(false)}
+                onClick={() => indexUploadedDocuments()}
                 disabled={isIndexing || isUploading}
               >
                 {isIndexing ? (isEnglish ? "Indexing..." : "İndeksleniyor...") : isEnglish ? "Index" : "İndeksle"}
               </AButton>
               <AButton
                 type="button"
-                onClick={() => indexUploadedDocuments(true)}
+                onClick={() => indexUploadedDocuments()}
                 disabled={isIndexing || isUploading}
               >
                 {isEnglish ? "Index with LLM" : "LLM ile indeksle"}

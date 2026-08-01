@@ -238,7 +238,7 @@ export function DocumentsPanel() {
     setSelectedDocument(body);
   }
 
-  async function reindexDocument(documentName: string, useLlm: boolean) {
+  async function reindexDocument(documentName: string) {
     const controller = new AbortController();
     const operationId = crypto.randomUUID();
     reindexAbortController.current = controller;
@@ -259,7 +259,7 @@ export function DocumentsPanel() {
             "X-Reindex-Operation-Id": operationId
           },
           signal: controller.signal,
-          body: JSON.stringify({ useLlm })
+          body: JSON.stringify({ mode: "automatic" })
         }
       );
       const body = await response.json();
@@ -454,28 +454,14 @@ export function DocumentsPanel() {
                         className={`document-index-tooltip-${document.documentName}`}
                         type="button"
                         tone="secondary"
-                        onClick={() => reindexDocument(document.documentName, false)}
+                        onClick={() => reindexDocument(document.documentName)}
                         disabled={Boolean(activeDocument)}
                       >
                         {isEnglish ? "Index" : "İndeksle"}
                       </AButton>
-                      <AButton
-                        className={`document-llm-tooltip-${document.documentName}`}
-                        type="button"
-                        tone="secondary"
-                        onClick={() => reindexDocument(document.documentName, true)}
-                        disabled={Boolean(activeDocument)}
-                      >
-                        LLM
-                      </AButton>
                       <Tooltip
                         target={`.document-index-tooltip-${document.documentName}`}
-                        content={isEnglish ? "Rebuilds the document index with rule-based extraction." : "Belge indeksini kural tabanlı çıkarımla yeniden oluşturur."}
-                        position="top"
-                      />
-                      <Tooltip
-                        target={`.document-llm-tooltip-${document.documentName}`}
-                        content={isEnglish ? "Uses AI to create a document summary and extract additional entities." : "Belge özeti ve ek varlıklar oluşturmak için yapay zekâ kullanır."}
+                        content={isEnglish ? "Rebuilds the document index using automatic, stage-specific routing." : "Belge indeksini aşama bazlı otomatik yönlendirmeyle yeniden oluşturur."}
                         position="top"
                       />
                       <AButton
