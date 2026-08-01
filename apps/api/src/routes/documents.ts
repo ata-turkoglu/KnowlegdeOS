@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { MultipartValue, SavedMultipartFile } from "@fastify/multipart";
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import type { ApiConfig } from "../config/env.js";
 import { isHttpError } from "../lib/http-errors.js";
 import {
@@ -19,6 +20,8 @@ import { cancelTrackedOperation, clearOperationHistory, createOperation, findRun
 import type { IndexingRequestMode, IndexingStageName } from "../services/indexing-plan.js";
 import { getGpuMetrics } from "../services/gpu.js";
 import { embedSelectedDocuments, getEmbeddingCoverage, invalidateSemanticIndex } from "../services/semantic-search.js";
+import { getWorkspaceStoragePaths } from "../services/storage.js";
+import { readFile } from "node:fs/promises";
 
 type ReindexOperation = {
   stage: string;
@@ -100,6 +103,17 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
     listOperations(config, request.query.workspaceSlug || "merter-arsivi"));
   app.delete<{ Querystring: { workspaceSlug?: string } }>("/api/operations", async (request) =>
     clearOperationHistory(config, request.query.workspaceSlug || "merter-arsivi"));
+  app.get<{ Params: { workspaceSlug: string; traceId: string } }>("/api/indexing-diagnostics/:workspaceSlug/:traceId", async (request, reply) => {
+    if (!/^[a-f0-9-]{36}$/i.test(request.params.traceId)) return reply.code(400).send({ error: "Invalid diagnostics trace ID." });
+    try {
+      const paths = getWorkspaceStoragePaths(config.storageRoot, request.params.workspaceSlug);
+      const contents = await readFile(path.join(paths.metadata, `indexing-trace-${request.params.traceId}.json`), "utf8");
+      return reply.type("application/json").send(JSON.parse(contents));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return reply.code(404).send({ error: "Diagnostics trace not found or has expired." });
+      return handleError(reply, error);
+    }
+  });
   app.get("/api/gpu", async () => getGpuMetrics());
 
   app.get<{ Params: { workspaceSlug: string } }>("/api/documents/:workspaceSlug/embedding-coverage", async (request, reply) => {

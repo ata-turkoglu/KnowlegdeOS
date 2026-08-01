@@ -131,7 +131,8 @@ function OperationStatusDialog({ visible, onHide, workspaceSlug }: { visible: bo
         const warnings = stages.filter(([, result]) => result.status === 'succeeded_with_warnings').map(([stage]) => stage);
         const route = record.indexingPlan?.stages?.relationships;
         const detail = failed.length ? `${isEnglish ? 'failed' : 'başarısız'}: ${failed.join(', ')}` : warnings.length ? `${isEnglish ? 'review' : 'inceleme'}: ${warnings.join(', ')}` : `${isEnglish ? 'completed' : 'tamamlandı'}${route?.model ? ` · ${route.provider}/${route.model}` : ''}`;
-        return <span key={documentName}>{documentName}: {detail}</span>;
+        const traceUrl = record.traceId ? `${apiBaseUrl}/api/indexing-diagnostics/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(record.traceId)}` : undefined;
+        return <span key={documentName}>{documentName}: {detail}{traceUrl ? <> {' · '}<a href={traceUrl} target="_blank" rel="noreferrer">{isEnglish ? 'Diagnostics' : 'Tanı'}</a></> : null}</span>;
       })}
     </small>;
   }
