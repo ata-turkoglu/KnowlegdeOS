@@ -1,26 +1,37 @@
 %% GENERATED FILE — packages/shared/src/chat-workflow.ts dosyasından üretilir.
 %% Elle düzenlemeyin: corepack pnpm docs:generate
 flowchart LR
-  received["Soru alındı"]
-  classify["Sorgu sınıflandırma"]
-  retrieve["Paralel hybrid retrieval"]
+  received["İstek doğrulama"]
+  history["Sohbet geçmişi"]
+  normalize["Sorgu normalleştirme"]
+  classify["Niyet ve filtre analizi"]
+  plan["Yürütme planı"]
+  database["Doğrudan veritabanı yanıtı"]
+  retrieve["Paralel retrieval"]
 
-  subgraph retrieve_branches[Paralel hybrid retrieval]
+  subgraph retrieve_branches[Paralel retrieval]
     direction TB
     entity["Entity arama"]
     lexical["Lexical arama"]
     semantic["Semantic arama"]
   end
-  fuse["RRF birleştirme"]
+  fuse["Sonuç birleştirme"]
   rerank["Yeniden sıralama"]
-  context["Context oluşturma"]
-  generate["LLM yanıt üretimi"]
-  validate["Kaynak doğrulama"]
-  persist["Geçmişe kaydetme"]
+  context["Bağlam bütçesi"]
+  evidence["Kanıt alıntısı seçimi"]
+  safety["Kanıt güvenliği"]
+  conflict["Kaynak çelişkisi kontrolü"]
+  generate["Kaynaklı cevap üretimi"]
+  validate["Citation doğrulama"]
+  persist["Sohbeti kaydetme"]
   deliver["Yanıtı gönderme"]
 
-  received --> classify
-  classify --> retrieve
+  received --> history
+  history --> normalize
+  normalize --> classify
+  classify --> plan
+  plan --> database
+  database --> retrieve
   retrieve --> entity
   retrieve --> lexical
   retrieve --> semantic
@@ -29,7 +40,10 @@ flowchart LR
   semantic --> fuse
   fuse --> rerank
   rerank --> context
-  context --> generate
+  context --> evidence
+  evidence --> safety
+  safety --> conflict
+  conflict --> generate
   generate --> validate
   validate --> persist
   persist --> deliver
@@ -39,7 +53,7 @@ flowchart LR
   classDef retrieval fill:#fff7ed,stroke:#d97706,color:#7c2d12;
   classDef model fill:#f5f3ff,stroke:#7c3aed,color:#3b0764;
   classDef control fill:#fef2f2,stroke:#dc2626,color:#7f1d1d;
-  class received,classify,context,deliver chat;
-  class retrieve,entity,lexical,semantic,fuse,rerank retrieval;
-  class generate model;
-  class validate,persist control;
+  class received,history,context,deliver chat;
+  class database,retrieve,entity,lexical,semantic,fuse retrieval;
+  class normalize,classify,rerank,evidence,conflict,generate model;
+  class plan,safety,validate,persist control;

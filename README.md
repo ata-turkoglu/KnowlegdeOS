@@ -4,6 +4,8 @@ Local-first AI-powered archive and knowledge management system.
 
 Project structure, development rules, and canonical process documentation start at [PROJECT.md](PROJECT.md).
 
+AI coding assistants should start at [AI_CONTEXT.md](AI_CONTEXT.md), then follow the nearest subtree context file.
+
 ## Sprint 1
 
 This repository is structured as a pnpm monorepo:
