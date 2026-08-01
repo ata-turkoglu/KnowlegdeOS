@@ -1,4 +1,4 @@
-import { flattenGenerationInput, isStructuredGenerationInput, type EmbeddingProvider, type GenerationInput, type GenerationOptions, type LLMProvider } from "../index.js";
+import { flattenGenerationInput, isStructuredGenerationInput, reportRawModelOutput, type EmbeddingProvider, type GenerationInput, type GenerationOptions, type LLMProvider } from "../index.js";
 
 const baseUrl = "https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -7,6 +7,7 @@ export class GeminiProvider implements LLMProvider {
 
   async generate(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): Promise<string> {
     const text = await this.request(flattenGenerationInput(input), signal, undefined, options?.maxOutputTokens);
+    reportRawModelOutput(options, "gemini", this.model, text);
     try {
       options?.onMetadata?.({
         provider: "gemini",
@@ -21,12 +22,16 @@ export class GeminiProvider implements LLMProvider {
     yield await this.generate(input, signal, options);
   }
 
-  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    return JSON.parse(await this.request(prompt, signal, "application/json")) as T;
+  async generateJson<T>(prompt: string, signal?: AbortSignal, options?: GenerationOptions): Promise<T> {
+    const text = await this.request(prompt, signal, "application/json");
+    reportRawModelOutput(options, "gemini", this.model, text);
+    return JSON.parse(text) as T;
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
-    return JSON.parse(await this.request(prompt, signal, "application/json", undefined, jsonSchema)) as T;
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object, options?: GenerationOptions): Promise<T> {
+    const text = await this.request(prompt, signal, "application/json", undefined, jsonSchema);
+    reportRawModelOutput(options, "gemini", this.model, text);
+    return JSON.parse(text) as T;
   }
 
   private async request(prompt: string, signal?: AbortSignal, responseMimeType?: "application/json", maxOutputTokens?: number, responseSchema?: object): Promise<string> {

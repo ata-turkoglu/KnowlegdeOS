@@ -1,4 +1,4 @@
-import { flattenGenerationInput, isStructuredGenerationInput, type EmbeddingProvider, type GenerationInput, type GenerationOptions, type LLMProvider } from "../index.js";
+import { flattenGenerationInput, isStructuredGenerationInput, reportRawModelOutput, type EmbeddingProvider, type GenerationInput, type GenerationOptions, type LLMProvider } from "../index.js";
 
 type OllamaGenerateResponse = {
   response?: string;
@@ -31,15 +31,25 @@ export class OllamaProvider implements LLMProvider {
     if (!reader) throw new Error("Ollama returned an empty response stream.");
     const decoder = new TextDecoder();
     let pending = "";
+    let output = "";
     while (true) {
       const { done, value } = await reader.read();
       pending += decoder.decode(value, { stream: !done });
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() ?? "";
-      for (const line of lines) yield parseGeneratedChunk(line);
+      for (const line of lines) {
+        const chunk = parseGeneratedChunk(line);
+        output += chunk;
+        yield chunk;
+      }
       if (done) break;
     }
-    if (pending.trim()) yield parseGeneratedChunk(pending);
+    if (pending.trim()) {
+      const chunk = parseGeneratedChunk(pending);
+      output += chunk;
+      yield chunk;
+    }
+    reportRawModelOutput(options, "ollama", this.model, output);
     try {
       options?.onMetadata?.({
         provider: "ollama",
@@ -49,13 +59,15 @@ export class OllamaProvider implements LLMProvider {
     } catch { /* Telemetry must never fail generation. */ }
   }
 
-  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+  async generateJson<T>(prompt: string, signal?: AbortSignal, options?: GenerationOptions): Promise<T> {
     const text = await readGeneratedText(await this.request(prompt, signal, "json"));
+    reportRawModelOutput(options, "ollama", this.model, text);
     return JSON.parse(extractJson(text)) as T;
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object, options?: GenerationOptions): Promise<T> {
     const text = await readGeneratedText(await this.request(prompt, signal, jsonSchema ?? "json"));
+    reportRawModelOutput(options, "ollama", this.model, text);
     return JSON.parse(extractJson(text)) as T;
   }
 

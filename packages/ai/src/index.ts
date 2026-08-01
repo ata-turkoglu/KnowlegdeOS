@@ -26,7 +26,54 @@ export type GenerationMetadata = {
 export type GenerationOptions = {
   maxOutputTokens?: number;
   onMetadata?: (metadata: GenerationMetadata) => void;
+  /**
+   * Opt-in capture of the model's generated text. This is deliberately the
+   * model output, not the provider's HTTP transport payload: credentials,
+   * headers, request prompts, and provider-only fields never cross this
+   * contract. Callers remain responsible for choosing a private retention
+   * location.
+   */
+  rawOutput?: {
+    enabled: boolean;
+    maxCharacters?: number;
+    onOutput: (output: RawModelOutput) => void;
+  };
 };
+
+export type RawModelOutput = {
+  provider: "ollama" | "openai" | "gemini" | "anthropic";
+  model: string;
+  text: string;
+  originalCharacterCount: number;
+  truncated: boolean;
+};
+
+const defaultRawOutputLimit = 32_000;
+const maximumRawOutputLimit = 256_000;
+
+/** Shared, fail-open privacy boundary for all provider adapters. */
+export function reportRawModelOutput(
+  options: GenerationOptions | undefined,
+  provider: RawModelOutput["provider"],
+  model: string,
+  text: string
+) {
+  const requested = options?.rawOutput;
+  if (!requested?.enabled) return;
+  const limit = Math.max(1, Math.min(requested.maxCharacters ?? defaultRawOutputLimit, maximumRawOutputLimit));
+  const redacted = text
+    .replace(/\b(?:sk|AIza)[A-Za-z0-9_-]{16,}\b/g, "[REDACTED]")
+    .replace(/\b(?:api[_-]?key|authorization|password|token)\s*[:=]\s*["']?[^\s,"'}\]]+/gi, "$1=[REDACTED]");
+  try {
+    requested.onOutput({
+      provider,
+      model,
+      text: redacted.slice(0, limit),
+      originalCharacterCount: text.length,
+      truncated: redacted.length > limit
+    });
+  } catch { /* Diagnostics must never fail generation. */ }
+}
 
 const dynamicRequestStart = "<dynamic_request>";
 const dynamicRequestEnd = "</dynamic_request>";
@@ -44,8 +91,8 @@ export function isStructuredGenerationInput(input: GenerationInput): input is Ex
 export interface LLMProvider {
   generate(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): Promise<string>;
   generateStream(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): AsyncIterable<string>;
-  generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T>;
-  generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T>;
+  generateJson<T>(prompt: string, signal?: AbortSignal, options?: GenerationOptions): Promise<T>;
+  generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object, options?: GenerationOptions): Promise<T>;
 }
 
 export interface EmbeddingProvider {

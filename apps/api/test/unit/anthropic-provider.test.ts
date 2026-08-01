@@ -13,7 +13,9 @@ test("Anthropic provider sends Messages API shape and parses text", async (t) =>
     return new Response(JSON.stringify({ content: [{ type: "text", text: "grounded" }] }), { status: 200 });
   };
   const provider = new AnthropicProvider("secret", "claude-test", .2, "https://anthropic.test");
-  assert.equal(await provider.generate("prompt", undefined, { maxOutputTokens: 777 }), "grounded");
+  let raw = "";
+  assert.equal(await provider.generate("prompt", undefined, { maxOutputTokens: 777, rawOutput: { enabled: true, onOutput: (output) => { raw = output.text; } } }), "grounded");
+  assert.equal(raw, "grounded");
 });
 
 test("Anthropic marks only the stable system block for prompt caching", async (t) => {

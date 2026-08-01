@@ -12,7 +12,9 @@ test("OpenAI legacy string input preserves the pre-cache request shape", async (
     assert.equal(body.cache_control, undefined);
     return new Response(JSON.stringify({ output_text: "ok" }), { status: 200 });
   };
-  assert.equal(await new OpenAIProvider("secret", "gpt-test", .2).generate("legacy prompt"), "ok");
+  let raw = "";
+  assert.equal(await new OpenAIProvider("secret", "gpt-test", .2).generate("legacy prompt", undefined, { rawOutput: { enabled: true, onOutput: (output) => { raw = output.text; } } }), "ok");
+  assert.equal(raw, "ok");
 });
 
 test("OpenAI sends a deterministic stable prefix first and parses cached usage", async (t) => {

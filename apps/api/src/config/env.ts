@@ -52,6 +52,9 @@ export type ApiConfig = {
   metadataDiagnosticsEnabled: boolean;
   indexingDiagnosticsEnabled: boolean;
   indexingDiagnosticsRetentionDays: number;
+  /** Raw model text is private diagnostic data and is disabled by default. */
+  rawModelOutputDiagnosticsEnabled: boolean;
+  rawModelOutputMaxCharacters: number;
   geminiApiKey: string;
   geminiLlmModel: string;
   geminiEmbeddingModel: string;
@@ -124,6 +127,8 @@ export function loadConfig(): ApiConfig {
     metadataDiagnosticsEnabled: enabled(process.env.METADATA_DIAGNOSTICS_ENABLED, false),
     indexingDiagnosticsEnabled: enabled(process.env.INDEXING_DIAGNOSTICS_ENABLED, false),
     indexingDiagnosticsRetentionDays: Math.max(1, Number(process.env.INDEXING_DIAGNOSTICS_RETENTION_DAYS ?? 7)),
+    rawModelOutputDiagnosticsEnabled: enabled(process.env.RAW_MODEL_OUTPUT_DIAGNOSTICS_ENABLED, false),
+    rawModelOutputMaxCharacters: Math.max(1, Math.min(256_000, Number(process.env.RAW_MODEL_OUTPUT_MAX_CHARACTERS ?? 32_000))),
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     geminiLlmModel: process.env.GEMINI_LLM_MODEL ?? "gemini-2.5-flash",
     geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2",

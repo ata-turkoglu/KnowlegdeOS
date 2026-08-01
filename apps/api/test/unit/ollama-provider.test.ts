@@ -19,7 +19,9 @@ test("Ollama generation keeps the caller signal and has no internal timeout sign
     }), { status: 200 });
   };
   const provider = new OllamaProvider("http://ollama", "qwen3:8b", 1, .1);
-  assert.equal(await provider.generate("prompt", controller.signal), "ok");
+  let raw = "";
+  assert.equal(await provider.generate("prompt", controller.signal, { rawOutput: { enabled: true, onOutput: (output) => { raw = output.text; } } }), "ok");
+  assert.equal(raw, "ok");
 });
 
 test("Ollama keep_alive can be disabled without reporting cost-cache savings", async (t) => {

@@ -5,7 +5,8 @@ import {
   type GenerationInput,
   type GenerationMetadata,
   type GenerationOptions,
-  type LLMProvider
+  type LLMProvider,
+  reportRawModelOutput
 } from "../index.js";
 
 type OpenAIResponseBody = {
@@ -119,14 +120,16 @@ export class OpenAIProvider implements LLMProvider {
     if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}: ${await response.text()}`);
     const body = await response.json() as OpenAIResponseBody;
     safelyReport(options, openAiMetadata(this.model, body, cacheEnabled));
-    return getOutputText(body);
+    const text = getOutputText(body);
+    reportRawModelOutput(options, "openai", this.model, text);
+    return text;
   }
 
   async *generateStream(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): AsyncIterable<string> {
     yield await this.generate(input, signal, options);
   }
 
-  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+  async generateJson<T>(prompt: string, signal?: AbortSignal, options?: GenerationOptions): Promise<T> {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
@@ -153,6 +156,7 @@ export class OpenAIProvider implements LLMProvider {
 
     const body = await response.json() as OpenAIResponseBody;
     const outputText = getOutputText(body);
+    reportRawModelOutput(options, "openai", this.model, outputText);
 
     if (!outputText) {
       const reason = body.incomplete_details?.reason ?? body.status ?? "empty output";
@@ -162,7 +166,7 @@ export class OpenAIProvider implements LLMProvider {
     return JSON.parse(outputText) as T;
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object, options?: GenerationOptions): Promise<T> {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
@@ -185,6 +189,7 @@ export class OpenAIProvider implements LLMProvider {
     if (!response.ok) throw new Error(`OpenAI response failed with ${response.status}: ${await response.text()}`);
     const body = await response.json() as OpenAIResponseBody;
     const outputText = getOutputText(body);
+    reportRawModelOutput(options, "openai", this.model, outputText);
     if (!outputText) {
       const reason = body.incomplete_details?.reason ?? body.status ?? "empty output";
       throw new Error(`OpenAI did not return a complete JSON response (${reason}).`);

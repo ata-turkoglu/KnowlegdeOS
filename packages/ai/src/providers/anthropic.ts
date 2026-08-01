@@ -5,7 +5,8 @@ import {
   type GenerationMetadata,
   type GenerationOptions,
   type GenerationUsage,
-  type LLMProvider
+  type LLMProvider,
+  reportRawModelOutput
 } from "../index.js";
 
 type AnthropicUsage = {
@@ -43,6 +44,7 @@ export class AnthropicProvider implements LLMProvider {
     const body = await response.json() as AnthropicMessage;
     const text = body.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("") ?? "";
     if (!text) throw new Error(`Anthropic returned no text (${body.stop_reason ?? "unknown"}).`);
+    reportRawModelOutput(options, "anthropic", this.model, text);
     safelyReport(options, anthropicMetadata(this.model, body.usage, isCacheEnabled(input)));
     return text;
   }
@@ -53,6 +55,7 @@ export class AnthropicProvider implements LLMProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let output = "";
     let usage: AnthropicUsage | undefined;
     try {
       while (true) {
@@ -67,29 +70,33 @@ export class AnthropicProvider implements LLMProvider {
           if (!data || data === "[DONE]") continue;
           const event = JSON.parse(data) as AnthropicStreamEvent;
           usage = mergeUsage(usage, event.message?.usage ?? event.usage);
-          if (event.type === "content_block_delta" && event.delta?.text) yield event.delta.text;
+          if (event.type === "content_block_delta" && event.delta?.text) {
+            output += event.delta.text;
+            yield event.delta.text;
+          }
         }
       }
     } finally {
       reader.releaseLock();
     }
     safelyReport(options, anthropicMetadata(this.model, usage, isCacheEnabled(input)));
+    reportRawModelOutput(options, "anthropic", this.model, output);
   }
 
-  async generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    return this.json<T>(prompt, signal);
+  async generateJson<T>(prompt: string, signal?: AbortSignal, options?: GenerationOptions): Promise<T> {
+    return this.json<T>(prompt, signal, options);
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object, options?: GenerationOptions): Promise<T> {
     // Messages has no portable JSON-schema response mode. Runtime validation
     // remains authoritative; include the contract so this provider receives
     // the same explicit shape request as schema-capable providers.
     const schemaInstruction = jsonSchema ? `\nJSON Schema contract: ${JSON.stringify(jsonSchema)}` : '';
-    return this.json<T>(`${prompt}${schemaInstruction}`, signal);
+    return this.json<T>(`${prompt}${schemaInstruction}`, signal, options);
   }
 
-  private async json<T>(prompt: string, signal?: AbortSignal) {
-    const text = await this.generate(`${prompt}\nReturn only a valid JSON object.`, signal, { maxOutputTokens: 4096 });
+  private async json<T>(prompt: string, signal?: AbortSignal, options?: GenerationOptions) {
+    const text = await this.generate(`${prompt}\nReturn only a valid JSON object.`, signal, { ...options, maxOutputTokens: 4096 });
     try { return JSON.parse(text) as T; } catch { throw new Error("Anthropic returned invalid JSON."); }
   }
 
