@@ -16,6 +16,7 @@
     "docs:check": "node apps/api/node_modules/tsx/dist/cli.mjs scripts/generate-chat-workflow-doc.ts --check",
     "metadata:audit": "node apps/api/node_modules/tsx/dist/cli.mjs scripts/audit-metadata.ts",
     "indexing:audit": "node apps/api/node_modules/tsx/dist/cli.mjs scripts/audit-indexing-graph.ts",
+    "indexing:rebuild": "node apps/api/node_modules/tsx/dist/cli.mjs scripts/rebuild-indexing.ts",
     "verify": "corepack pnpm docs:check && corepack pnpm typecheck && corepack pnpm build && corepack pnpm test"
   },
   "devDependencies": {
