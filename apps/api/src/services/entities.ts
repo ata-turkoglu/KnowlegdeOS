@@ -227,6 +227,7 @@ export async function replaceDocumentEntities(
         .from(documentChunks)
         .where(eq(documentChunks.documentId, documentId))
         .orderBy(documentChunks.chunkIndex);
+      const normalizedSource = chunks.map((chunk) => chunk.normalizedContent).join(' ');
       if (chunks.length)
         await tx.delete(chunkEntities).where(
           inArray(
@@ -337,7 +338,8 @@ export async function replaceDocumentEntities(
         const entity = byPersonValue.get(normalizeForSearch(item.canonical));
         if (!entity) { rejectAlias('canonical_not_persisted', { canonical: item.canonical, alias: item.alias }); continue; }
         if (normalizeForSearch(item.canonical) === normalizeForSearch(item.alias)) { rejectAlias('same_normalized_value', { canonical: item.canonical, alias: item.alias }); continue; }
-        await tx
+        if (item.source === 'LLM' && !normalizedSource.includes(normalizeForSearch(item.alias))) { rejectAlias('alias_not_in_source', { canonical: item.canonical, alias: item.alias }); continue; }
+        const [created] = await tx
           .insert(entityAliases)
           .values({
             entityId: entity.id,
@@ -350,7 +352,9 @@ export async function replaceDocumentEntities(
             model: item.source === 'LLM' ? provenance?.model ?? null : null,
             evidenceSnippet: item.evidenceSnippet ?? null,
           })
-          .onConflictDoNothing();
+          .onConflictDoNothing()
+          .returning({ id: entityAliases.id });
+        if (!created) { rejectAlias('duplicate', { canonical: item.canonical, alias: item.alias }); continue; }
         acceptedAliases += 1;
       }
       await tx.delete(entities).where(
