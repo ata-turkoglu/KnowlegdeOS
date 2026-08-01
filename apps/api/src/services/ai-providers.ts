@@ -6,6 +6,7 @@ function providerForSelection(config: ApiConfig, selection: string, temperature:
   const [provider, ...parts] = selection.split("/");
   const model = parts.length ? parts.join("/") : selection;
   if (provider === "openai") return new OpenAIProvider(requireKey(config.openaiApiKey, "OpenAI"), model, temperature);
+  if (provider === "gemini") return new GeminiProvider(requireKey(config.geminiApiKey, "Gemini"), model, temperature);
   if (provider === "anthropic") return new AnthropicProvider(requireKey(config.anthropicApiKey, "Anthropic"), model, temperature, config.anthropicBaseUrl);
   return new OllamaProvider(config.ollamaBaseUrl, model, config.ollamaLlmTimeoutMs, temperature, config.ollamaKeepAlive);
 }
