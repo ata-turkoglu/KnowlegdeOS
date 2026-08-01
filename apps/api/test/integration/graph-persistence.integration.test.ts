@@ -25,23 +25,23 @@ test('grounded aliases and relationships persist their provenance', async (t) =>
   try {
     const paths = await ensureWorkspaceStorage(root, slug);
     const markdownPath = path.join(paths.markdown, 'fixture.md');
-    const content = 'Ali Veli (A. Veli), Acme Vakfı temsil eder.';
+    const content = 'Ali Veli (A. Veli), Acme Foundation temsil eder.';
     await writeFile(markdownPath, content);
     const [workspace] = await client.queryClient<{ id: string }[]>`insert into workspaces (slug, name, storage_path) values (${slug}, ${slug}, ${paths.root}) returning id`;
     const [document] = await client.queryClient<{ id: string }[]>`
       insert into documents (workspace_id, filename, title, markdown_path, content, normalized_content, status, hash)
-      values (${workspace.id}, 'fixture.md', 'Fixture', ${markdownPath}, ${content}, 'ali veli a veli acme vakfı temsil eder', 'UPLOADED', 'fixture-hash') returning id`;
+      values (${workspace.id}, 'fixture.md', 'Fixture', ${markdownPath}, ${content}, 'ali veli a veli acme foundation temsil eder', 'UPLOADED', 'fixture-hash') returning id`;
     await client.queryClient`
       insert into document_chunks (document_id, chunk_index, content, normalized_content, content_hash, token_count)
-      values (${document.id}, 0, ${content}, 'ali veli a veli acme vakfı temsil eder', ${createHash('sha256').update(content).digest('hex')}, 8)`;
+      values (${document.id}, 0, ${content}, 'ali veli a veli acme foundation temsil eder', ${createHash('sha256').update(content).digest('hex')}, 8)`;
     const config = { ...loadConfig(), databaseUrl: url, storageRoot: root };
     const extracted = [
       { type: 'PERSON', value: 'Ali Veli', normalizedValue: 'ali veli', evidenceSnippet: 'Ali Veli', confidence: 0.98, source: 'REGEX' as const },
-      { type: 'ORGANIZATION', value: 'Acme Vakfı', normalizedValue: 'acme vakfı', evidenceSnippet: 'Acme Vakfı', confidence: 0.98, source: 'REGEX' as const },
+      { type: 'ORGANIZATION', value: 'Acme Foundation', normalizedValue: 'acme foundation', evidenceSnippet: 'Acme Foundation', confidence: 0.98, source: 'REGEX' as const },
     ];
     const firstAliases = await replaceDocumentEntities(config, slug, document.id, extracted, [{ canonical: 'Ali Veli', alias: 'A. Veli', confidence: 0.8, source: 'LLM' }], { provider: 'openai', model: 'fixture-model' });
-    assert.equal(firstAliases.acceptedCount, 1);
-    const relationship = await replaceDocumentRelationships(config, slug, document.id, [{ source: 'Ali Veli', relation: 'temsil eder', target: 'Acme Vakfı', evidence: content }], { provider: 'openai', model: 'fixture-model' });
+    if (firstAliases.acceptedCount !== 1) throw new Error(JSON.stringify(firstAliases));
+    const relationship = await replaceDocumentRelationships(config, slug, document.id, [{ source: 'Ali Veli', relation: 'temsil eder', target: 'Acme Foundation', evidence: content }], { provider: 'openai', model: 'fixture-model' });
     assert.equal(relationship.acceptedCount, 1);
     const [alias] = await client.queryClient<{ document_id: string; provider: string; model: string }[]>`select document_id, provider, model from entity_aliases where alias = 'A. Veli'`;
     assert.deepEqual(alias, { document_id: document.id, provider: 'openai', model: 'fixture-model' });
