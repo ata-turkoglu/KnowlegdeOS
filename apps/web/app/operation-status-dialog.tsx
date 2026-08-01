@@ -15,6 +15,7 @@ type Operation = {
   progress: number;
   error?: string;
   retry?: { documentName?: string; mode?: "automatic" | "user_configured"; useLlm?: boolean };
+  documentIndexing?: Record<string, { indexingPlan?: { stages?: Record<string, { execution?: string; provider?: string; model?: string }> }; stageResults?: Record<string, { status?: string; acceptedCount?: number; rejectedCount?: number; warnings?: string[] }>; traceId?: string }>;
 };
 
 type Gpu = {
@@ -120,10 +121,26 @@ function OperationStatusDialog({ visible, onHide, workspaceSlug }: { visible: bo
     }
   }
 
+  function indexingSummary(item: Operation) {
+    const records = Object.entries(item.documentIndexing ?? {});
+    if (!records.length) return null;
+    return <small className="operation-row__indexing-summary">
+      {records.map(([documentName, record]) => {
+        const stages = Object.entries(record.stageResults ?? {});
+        const failed = stages.filter(([, result]) => result.status === 'failed').map(([stage]) => stage);
+        const warnings = stages.filter(([, result]) => result.status === 'succeeded_with_warnings').map(([stage]) => stage);
+        const route = record.indexingPlan?.stages?.relationships;
+        const detail = failed.length ? `${isEnglish ? 'failed' : 'başarısız'}: ${failed.join(', ')}` : warnings.length ? `${isEnglish ? 'review' : 'inceleme'}: ${warnings.join(', ')}` : `${isEnglish ? 'completed' : 'tamamlandı'}${route?.model ? ` · ${route.provider}/${route.model}` : ''}`;
+        return <span key={documentName}>{documentName}: {detail}</span>;
+      })}
+    </small>;
+  }
+
   const row = (item: Operation) => <article className={`operation-row is-${item.status}`} key={item.id}>
     <div>
       <strong>{item.targetName}</strong>
       <span>{item.stage}</span>
+      {indexingSummary(item)}
       {item.error ? <small>{item.error}</small> : null}
     </div>
     <div className="operation-row__status">
