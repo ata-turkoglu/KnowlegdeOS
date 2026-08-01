@@ -1,8 +1,9 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadConfig } from '../apps/api/src/config/env.ts';
-import { listStoredDocuments, reindexStoredDocument } from '../apps/api/src/services/documents.ts';
+import { listStoredDocuments, listStoredDocumentsReadOnly, reindexStoredDocument } from '../apps/api/src/services/documents.ts';
 import { embedSelectedDocuments } from '../apps/api/src/services/semantic-search.ts';
+import { regenerateStoredMarkdownYamlMetadata } from '../apps/api/src/services/conversions.ts';
 
 type Options = {
   workspaces: string[];
@@ -11,6 +12,8 @@ type Options = {
   allWorkspaces: boolean;
   apply: boolean;
   confirm: boolean;
+  dryRun: boolean;
+  regenerateYaml: boolean;
   resume: boolean;
   retryFailed: boolean;
   batchSize: number;
@@ -46,6 +49,8 @@ function options(): Options {
     allWorkspaces: process.argv.includes('--all-workspaces'),
     apply: process.argv.includes('--apply'),
     confirm: process.argv.includes('--confirm-rebuild'),
+    dryRun: process.argv.includes('--dry-run'),
+    regenerateYaml: process.argv.includes('--regenerate-yaml'),
     resume: process.argv.includes('--resume'),
     retryFailed: process.argv.includes('--retry-failed'),
     batchSize: Number.isInteger(batchSize) && batchSize > 0 ? batchSize : 10,
@@ -64,6 +69,7 @@ async function workspaceNames(config: ReturnType<typeof loadConfig>, input: Opti
 
 async function main() {
   const input = options();
+  if (input.dryRun && input.apply) throw new Error('--dry-run cannot be combined with --apply.');
   if (input.apply !== input.confirm) throw new Error('A rebuild is destructive to derived indexes. Use both --apply and --confirm-rebuild, or neither for a dry run.');
   if (input.resume && input.retryFailed) throw new Error('Use either --resume or --retry-failed, not both.');
   if ((input.resume || input.retryFailed) && !input.output) throw new Error('--resume and --retry-failed require --output=<prior-report.json>.');
@@ -74,11 +80,13 @@ async function main() {
   const requestedDocuments = [...input.documents, ...(input.inputFile ? (await readFile(input.inputFile, 'utf8')).split(/\r?\n/).map((value) => value.trim()).filter(Boolean) : [])];
   const report: { mode: 'dry-run' | 'apply'; metadataRegeneration: string; workspaces: WorkspaceReport[] } = {
     mode: input.apply ? 'apply' : 'dry-run',
-    metadataRegeneration: 'This command indexes stored Markdown/YAML. Run the existing YAML generation workflow and metadata:audit before applying it.',
+    metadataRegeneration: input.regenerateYaml
+      ? (input.apply ? 'YAML will be regenerated and serialization-validated before each document is reindexed.' : 'Dry run: YAML would be regenerated and serialization-validated before each selected document is reindexed.')
+      : 'YAML generation is disabled for this run. Add --regenerate-yaml to include the safe metadata generation and validation step.',
     workspaces: [],
   };
   for (const workspace of await workspaceNames(config, input)) {
-    const available = await listStoredDocuments(config, workspace);
+    const available = await (input.apply ? listStoredDocuments(config, workspace) : listStoredDocumentsReadOnly(config, workspace));
     const previousWorkspace = previous?.workspaces?.find((item) => item.workspace === workspace);
     const priorIndexed = new Set(previousWorkspace?.indexed ?? []);
     const priorFailed = previousWorkspace?.failed?.map((failure) => failure.documentName) ?? [];
@@ -101,6 +109,13 @@ async function main() {
       const completed: string[] = [];
       for (const document of batch) {
         try {
+          if (input.regenerateYaml) {
+            await regenerateStoredMarkdownYamlMetadata(config, {
+              workspaceSlug: workspace,
+              filename: document.filename,
+              markdownPath: document.markdownPath
+            });
+          }
           await reindexStoredDocument(config, { workspaceSlug: workspace, documentName: document.documentName, mode: 'automatic' });
           indexed.push(document.documentName);
           completed.push(document.documentName);

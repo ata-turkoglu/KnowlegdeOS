@@ -8,6 +8,7 @@ import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
 import { ensureWorkspaceStorage, resolveStorageRoot, writeFileAtomically } from "./storage.js";
 import { getLlmProvider, getMetadataLlmProvider } from "./ai-providers.js";
+import type { RawModelOutput } from "@knowledgeos/ai";
 import { getWorkspaceYamlMetadataPrompt, interpolateYamlMetadataPrompt } from "./workspace-yaml-prompt.js";
 import { metadataFieldPolicies, metadataJsonSchema, metadataPromptFieldContract } from "@knowledgeos/shared";
 import { canonicalizeDateValue, getWorkspaceFieldDefinitions, mergeMetadataValue, registerWorkspaceMetadataFields, type DynamicMetadata, type MetadataScalar, type MetadataValue } from "./workspace-fields.js";
@@ -206,6 +207,7 @@ export async function addGeneratedYamlMetadata(
   // prose wrapper or minor syntax mistake from invalidating the conversion.
   let generated: GeneratedMetadata = {};
   const diagnostics = createMetadataDiagnostics();
+  const rawModelOutputs: RawModelOutput[] = [];
   const parts = splitMetadataDocument(document, metadataMaximumCharacters(config.metadataLlmModel));
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]!;
@@ -221,7 +223,11 @@ ${fieldCatalog}
 
 This is part ${index + 1} of ${parts.length}. Return a flat JSON object. ${metadataPromptFieldContract()}`;
     try {
-      const generatedResponse = await generateCleanMetadata(llm, prompt, options.signal);
+      const generatedResponse = await generateCleanMetadata(llm, prompt, options.signal, config.metadataDiagnosticsEnabled && config.rawModelOutputDiagnosticsEnabled ? {
+        enabled: true,
+        maxCharacters: config.rawModelOutputMaxCharacters,
+        onOutput: (output) => { rawModelOutputs.push(output); }
+      } : undefined);
       collectMetadataCandidates(generatedResponse, index, diagnostics);
     } catch (error) {
       // Large archival sections can legitimately contain hundreds of literal
@@ -257,12 +263,97 @@ This is part ${index + 1} of ${parts.length}. Return a flat JSON object. ${metad
   const output = `---\n${frontmatter}---\n\n${document.trim()}\n`;
   if (config.metadataDiagnosticsEnabled) {
     const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlugInput);
-    await writeFileAtomically(path.join(paths.metadata, `metadata-trace-${traceId}.json`), `${JSON.stringify({ traceId, providerModel: config.metadataLlmModel, filename: safeName, diagnostics, finalMetadata }, null, 2)}\n`);
+    await writeFileAtomically(path.join(paths.metadata, `metadata-trace-${traceId}.json`), `${JSON.stringify({ traceId, providerModel: config.metadataLlmModel, filename: safeName, diagnostics, finalMetadata, rawModelOutputs: config.rawModelOutputDiagnosticsEnabled ? rawModelOutputs : undefined, rawModelOutputStored: config.rawModelOutputDiagnosticsEnabled && rawModelOutputs.length > 0 }, null, 2).replace(/\b(sk|AIza)[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]').slice(0, 256_000)}\n`);
+    await pruneMetadataDiagnostics(paths.metadata, config.indexingDiagnosticsRetentionDays);
   }
   await report("Writing YAML frontmatter", 96);
   await writeFileAtomically(filePath, output);
   await report("Completed", 100);
   return { filename: safeName, traceId, metadata: { document_code: documentCode, source_original: sourceOriginal, ...generated } };
+}
+
+/**
+ * CLI-safe counterpart to the Convert-screen action. It operates on one
+ * already-stored Markdown path, writes only after generation and validation
+ * both succeed, and never reads or writes YAML into frontmatter diagnostics.
+ */
+export async function regenerateStoredMarkdownYamlMetadata(
+  config: ApiConfig,
+  input: { workspaceSlug: string; filename: string; markdownPath: string; signal?: AbortSignal }
+) {
+  const markdown = await readFile(input.markdownPath, "utf8");
+  const document = stripYamlFrontmatter(markdown);
+  const documentCode = document.match(/^##\s+\*{0,2}([^*\n]+?)\*{0,2}\s*$/m)?.[1]?.trim() ?? "";
+  const sourceOriginal = sourceOriginalFromConvertedName(input.filename);
+  const [workspacePrompt, fields] = await Promise.all([
+    getWorkspaceYamlMetadataPrompt(config, input.workspaceSlug),
+    getWorkspaceFieldDefinitions(config, input.workspaceSlug)
+  ]);
+  const fieldCatalog = fields.length
+    ? fields.map((field) => `${field.key} | ${field.valueType} | ${field.aliases.join(",") || "-"}`).join("\n")
+    : "(workspace field catalog is empty)";
+  const llm = getMetadataLlmProvider(config);
+  const diagnostics = createMetadataDiagnostics();
+  const rawModelOutputs: RawModelOutput[] = [];
+  const parts = splitMetadataDocument(document, metadataMaximumCharacters(config.metadataLlmModel));
+  for (let index = 0; index < parts.length; index += 1) {
+    if (input.signal?.aborted) throw new HttpError(499, "YAML metadata generation cancelled.");
+    const part = parts[index]!;
+    const prompt = `${interpolateYamlMetadataPrompt(workspacePrompt, { markdown: part, documentCode, sourceOriginal })}${mandatoryMetadataPolicy}
+
+Workspace metadata fields (reuse these keys whenever they fit):
+${fieldCatalog}
+
+This is part ${index + 1} of ${parts.length}. Return a flat JSON object. ${metadataPromptFieldContract()}`;
+    try {
+      const response = await generateCleanMetadata(llm, prompt, input.signal, config.metadataDiagnosticsEnabled && config.rawModelOutputDiagnosticsEnabled ? {
+        enabled: true,
+        maxCharacters: config.rawModelOutputMaxCharacters,
+        onOutput: (output) => { rawModelOutputs.push(output); }
+      } : undefined);
+      collectMetadataCandidates(response, index, diagnostics);
+    } catch (error) {
+      if (isOutputLimitError(error) && part.length > 6_000) {
+        parts.splice(index, 1, ...splitMetadataDocument(part, Math.max(6_000, Math.floor(part.length / 2))));
+        index -= 1;
+        continue;
+      }
+      throw error;
+    }
+  }
+  let generated = resolveMetadataCandidates(diagnostics.candidates, document, diagnostics);
+  if (!hasSubstantiveDocumentContent(document)) generated = preserveOnlySourceNotes(generated, document);
+  generated = (await registerWorkspaceMetadataFields(config, input.workspaceSlug, generated)).metadata;
+  const finalMetadata = {
+    document_code: documentCode,
+    source_original: sourceOriginal,
+    source_file: input.filename,
+    ocr_status: "pandoc_markdown",
+    metadata_provider: "llm",
+    ...generated
+  };
+  validateMetadataForSerialization(finalMetadata);
+  const output = `---\n${serializeMetadata(finalMetadata)}---\n\n${document.trim()}\n`;
+  const traceId = randomUUID();
+  if (config.metadataDiagnosticsEnabled) {
+    const paths = await ensureWorkspaceStorage(config.storageRoot, input.workspaceSlug);
+    const trace = JSON.stringify({ traceId, providerModel: config.metadataLlmModel, filename: input.filename, diagnostics, finalMetadata, rawModelOutputs: config.rawModelOutputDiagnosticsEnabled ? rawModelOutputs : undefined, rawModelOutputStored: config.rawModelOutputDiagnosticsEnabled && rawModelOutputs.length > 0 }, null, 2)
+      .replace(/\b(sk|AIza)[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]').slice(0, 256_000);
+    await writeFileAtomically(path.join(paths.metadata, `metadata-trace-${traceId}.json`), `${trace}\n`);
+    await pruneMetadataDiagnostics(paths.metadata, config.indexingDiagnosticsRetentionDays);
+  }
+  await writeFileAtomically(input.markdownPath, output);
+  return { traceId, metadata: finalMetadata, diagnostics };
+}
+
+async function pruneMetadataDiagnostics(metadataDirectory: string, retentionDays: number) {
+  const expiresBefore = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  for (const entry of await readdir(metadataDirectory, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile() || !/^metadata-trace-[a-f0-9-]+\.json$/i.test(entry.name)) continue;
+    const target = path.join(metadataDirectory, entry.name);
+    const file = await stat(target).catch(() => null);
+    if (file && file.mtimeMs < expiresBefore) await rm(target, { force: true }).catch(() => undefined);
+  }
 }
 
 function stripYamlFrontmatter(markdown: string) {
@@ -468,15 +559,16 @@ function isOutputLimitError(error: unknown) {
 async function generateCleanMetadata(
   llm: ReturnType<typeof getLlmProvider>,
   prompt: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  rawOutput?: NonNullable<import("@knowledgeos/ai").GenerationOptions["rawOutput"]>
 ): Promise<unknown> {
   const characterRule = "\n\nOutput-quality rule: every JSON string must be valid Unicode text. Never emit replacement characters, mojibake, ASCII/control characters, question marks, or '(?)' in place of unreadable source text. If a metadata value cannot be transcribed with certainty, leave that scalar empty or omit that list item. Return the complete JSON object only.";
-  const first = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}`, signal, metadataJsonSchema());
+  const first = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}`, signal, metadataJsonSchema(), rawOutput ? { rawOutput } : undefined);
   if (!containsInvalidMetadataCharacter(first)) return first;
 
   // A fresh generation is more reliable than editing a damaged string, since
   // the replacement character has discarded the original letter.
-  const retry = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}\n\nYour previous response contained invalid characters. Regenerate the entire JSON object from the Markdown and obey the output-quality rule exactly.`, signal, metadataJsonSchema());
+  const retry = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}\n\nYour previous response contained invalid characters. Regenerate the entire JSON object from the Markdown and obey the output-quality rule exactly.`, signal, metadataJsonSchema(), rawOutput ? { rawOutput } : undefined);
   if (!containsInvalidMetadataCharacter(retry)) return retry;
 
   // Preserve useful fields from the retry, but never save a field whose text

@@ -6,7 +6,7 @@ import { and, count, eq, inArray, sql } from "drizzle-orm";
 import type { SavedMultipartFile } from "@fastify/multipart";
 import type { MetadataValue } from "@knowledgeos/shared";
 import { claims, createDatabaseClient, documentChunks, documentEntities, documentFieldValues, documents, entities as entityTable, propertyReferences, relationships, workspaceFields, workspaces } from "@knowledgeos/database";
-import { buildAliasExtractionPrompt, buildClaimExtractionPrompt, buildRelationshipExtractionPrompt, buildSummaryExtractionPrompt, type LLMClaim, type LLMExtractionResult, type LLMRelationship } from "@knowledgeos/ai";
+import { buildAliasExtractionPrompt, buildClaimExtractionPrompt, buildRelationshipExtractionPrompt, buildSummaryExtractionPrompt, type LLMClaim, type LLMExtractionResult, type LLMRelationship, type RawModelOutput } from "@knowledgeos/ai";
 import { ingestMarkdown, parseMarkdownFrontmatter, type IngestionResult } from "@knowledgeos/ingestion";
 import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
@@ -116,6 +116,8 @@ async function restoreFileSnapshot(filePath: string, contents: Buffer | null) {
 export async function checkUploadConflicts(config: ApiConfig, input: { workspaceSlug?: string; files: Array<{ filename: string; hash: string }> }): Promise<UploadConflict[]> { const slug = slugify(input.workspaceSlug?.trim() || "inbox"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); return Promise.all(input.files.map(async (file) => { const filename = safeFileName(file.filename); const [row] = await db.select().from(documents).where(and(eq(documents.workspaceId, ws.id), eq(documents.filename, filename))).limit(1); return !row || row.status === "UPLOADED" ? { filename: file.filename, documentName: nameOf(filename), status: "NEW" } : { filename: file.filename, documentName: nameOf(filename), status: row.hash === file.hash ? "DUPLICATE" : "CONFLICT" }; })); }); }
 export async function getStoredDocumentHash(config: ApiConfig, input: { workspaceSlug?: string; filename: string }) { const slug = slugify(input.workspaceSlug?.trim() || "inbox"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const filename = safeFileName(input.filename); const [row] = await db.select().from(documents).where(and(eq(documents.workspaceId, ws.id), eq(documents.filename, filename))).limit(1); return { documentName: nameOf(filename), hash: row?.status === "INDEXED" ? row.hash : null, status: row?.status === "INDEXED" ? row.status : null }; }); }
 export async function listStoredDocuments(config: ApiConfig, workspaceSlug: string): Promise<DocumentListItem[]> { const slug = slugify(workspaceSlug || "merter-arsivi"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const rows = await db.select({ document: documents, chunks: sql<number>`count(distinct ${documentChunks.id})`, entities: sql<number>`count(distinct ${documentEntities.id})` }).from(documents).leftJoin(documentChunks, eq(documentChunks.documentId, documents.id)).leftJoin(documentEntities, eq(documentEntities.documentId, documents.id)).where(eq(documents.workspaceId, ws.id)).groupBy(documents.id).orderBy(documents.filename); return rows.map((row) => listItem(row.document, slug, Number(row.chunks), Number(row.entities))); }); }
+/** Rebuild previews must not create a workspace or modify operation state. */
+export async function listStoredDocumentsReadOnly(config: ApiConfig, workspaceSlug: string): Promise<DocumentListItem[]> { const slug = slugify(workspaceSlug || "merter-arsivi"); return withDb(config, async ({ db }) => { const [ws] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (!ws) return []; const rows = await db.select({ document: documents, chunks: sql<number>`count(distinct ${documentChunks.id})`, entities: sql<number>`count(distinct ${documentEntities.id})` }).from(documents).leftJoin(documentChunks, eq(documentChunks.documentId, documents.id)).leftJoin(documentEntities, eq(documentEntities.documentId, documents.id)).where(eq(documents.workspaceId, ws.id)).groupBy(documents.id).orderBy(documents.filename); return rows.map((row) => listItem(row.document, slug, Number(row.chunks), Number(row.entities))); }); }
 export async function getStoredDocumentDetail(config: ApiConfig, input: { workspaceSlug: string; documentName: string }): Promise<DocumentDetail> { const slug = slugify(input.workspaceSlug || "merter-arsivi"), wanted = slugify(input.documentName); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const rows = await db.select().from(documents).where(eq(documents.workspaceId, ws.id)); const row = rows.find((item) => nameOf(item.filename) === wanted); if (!row) throw new HttpError(404, "Document not found."); const [chunks, entityRows, markdown] = await Promise.all([db.select().from(documentChunks).where(eq(documentChunks.documentId, row.id)).orderBy(documentChunks.chunkIndex), db.select({ type: workspaceFields.label, value: entityTable.canonicalValue, confidence: documentEntities.confidence, evidenceSnippet: documentEntities.evidenceSnippet, source: documentEntities.source }).from(documentEntities).innerJoin(entityTable, eq(entityTable.id, documentEntities.entityId)).innerJoin(workspaceFields, eq(workspaceFields.id, entityTable.fieldId)).where(eq(documentEntities.documentId, row.id)), readFile(row.markdownPath, "utf8")]); return { ...listItem(row, slug, chunks.length, entityRows.length), hash: row.hash, summary: row.summary, markdown, quality: inspectIngestionQuality(chunks as unknown as IngestionResult["chunks"]), chunks: chunks.map((chunk) => ({ chunkIndex: chunk.chunkIndex, heading: chunk.heading ?? wanted, tokenCount: chunk.tokenCount, content: chunk.content })), entities: entityRows }; }); }
 export async function clearStoredDocumentGraph(config: ApiConfig, input: { workspaceSlug: string; documentName: string }) {
   const slug = slugify(input.workspaceSlug || 'merter-arsivi');
@@ -287,6 +289,7 @@ export async function reindexStoredDocument(
     const graphStages = ['aliases', 'relationships', 'claims', 'summary'] as const;
     const generated: LLMExtractionResult = { people: [], aliases: [], places: [], parcels: [], dates: [], organizations: [], documentType: null, relationships: [], claims: [], summary: '' };
     const stageErrors: string[] = [];
+    const rawModelOutputs: Partial<Record<typeof graphStages[number], RawModelOutput>> = {};
     const entityNames = [...new Set(deterministicEntities.map((entity) => entity.value.trim()).filter(Boolean))];
     const executeGraphStage = async <T>(stage: typeof graphStages[number], prompt: string, apply: (result: T) => Promise<void> | void) => {
       const decision = plan.stages[stage];
@@ -295,7 +298,13 @@ export async function reindexStoredDocument(
       stageResults[stage] = { ...stageResults[stage], status: 'running', startedAt };
       try {
         const selection = decision.provider === 'ollama' ? decision.model! : `${decision.provider}/${decision.model}`;
-        const result = await getLlmProviderForSelection(config, selection).generateJsonObject<T>(prompt, input.signal);
+        const result = await getLlmProviderForSelection(config, selection).generateJsonObject<T>(prompt, input.signal, undefined, {
+          rawOutput: config.indexingDiagnosticsEnabled && config.rawModelOutputDiagnosticsEnabled ? {
+            enabled: true,
+            maxCharacters: config.rawModelOutputMaxCharacters,
+            onOutput: (output) => { rawModelOutputs[stage] = output; }
+          } : undefined
+        });
         await apply(result);
         const applied = stageResults[stage];
         stageResults[stage] = { ...applied, status: applied.status === 'succeeded_with_warnings' ? 'succeeded_with_warnings' : 'succeeded', completedAt: new Date().toISOString() };
@@ -333,7 +342,7 @@ export async function reindexStoredDocument(
     }
     const llmExtractionError = stageErrors.length ? stageErrors.join('; ') : undefined;
     await db.update(documents).set({ llmExtraction: llmExtraction ?? null, llmExtractionError: llmExtractionError ?? null, summary: llmExtraction?.summary || scalar(ingestion.frontmatter, "summary") }).where(eq(documents.id, document.id));
-    return { document, ingestion, quality, settings, llmExtraction, llmExtractionError, plan, stageResults };
+    return { document, ingestion, quality, settings, llmExtraction, llmExtractionError, plan, stageResults, rawModelOutputs };
   });
   await writeIndexingDiagnostics(config, slug, traceId, {
     documentId: result.document.id,
@@ -342,8 +351,11 @@ export async function reindexStoredDocument(
     stageResults: result.stageResults,
     parsedOutputs: result.llmExtraction,
     errors: result.llmExtractionError ? result.llmExtractionError.split('; ') : [],
-    rawProviderResponseStored: false,
-    rawProviderResponseReason: 'Provider adapters expose parsed JSON only; raw transport payloads are intentionally not retained.'
+    rawModelOutputs: config.rawModelOutputDiagnosticsEnabled ? result.rawModelOutputs : undefined,
+    rawProviderResponseStored: config.indexingDiagnosticsEnabled && config.rawModelOutputDiagnosticsEnabled && Object.keys(result.rawModelOutputs).length > 0,
+    rawProviderResponseReason: config.rawModelOutputDiagnosticsEnabled
+      ? 'Opt-in redacted model output is retained; provider transport payloads, prompts, credentials, and headers are never stored.'
+      : 'Disabled by RAW_MODEL_OUTPUT_DIAGNOSTICS_ENABLED (default).'
   }).catch(() => undefined);
   ragRetrievalCache.invalidateWorkspace(slug);
   return {
