@@ -950,6 +950,28 @@ export async function replaceDocumentClaims(
   );
 }
 
+/** Explicit maintenance operation. Normal indexing never calls this: failed or
+ * rejected graph candidates must preserve previously usable graph rows. */
+export async function clearDocumentGraph(
+  config: ApiConfig,
+  workspaceSlug: string,
+  documentId: string,
+) {
+  return withDb(config, async ({ db }) =>
+    db.transaction(async (tx) => {
+      const ws = await workspace(tx, slugify(workspaceSlug));
+      const [document] = await tx.select({ id: documents.id }).from(documents).where(and(eq(documents.id, documentId), eq(documents.workspaceId, ws.id))).limit(1);
+      if (!document) throw new HttpError(404, 'Document not found.');
+      const [removedRelationships, removedClaims, removedAliases] = await Promise.all([
+        tx.delete(relationships).where(and(eq(relationships.documentId, documentId), eq(relationships.origin, 'LLM'))).returning({ id: relationships.id }),
+        tx.delete(claims).where(and(eq(claims.documentId, documentId), eq(claims.origin, 'LLM'))).returning({ id: claims.id }),
+        tx.delete(entityAliases).where(and(eq(entityAliases.documentId, documentId), eq(entityAliases.source, 'LLM'))).returning({ id: entityAliases.id }),
+      ]);
+      return { relationships: removedRelationships.length, claims: removedClaims.length, aliases: removedAliases.length };
+    }),
+  );
+}
+
 /** Kanıt metninde entity canonical değeri veya kayıtlı aliaslarından biri geçiyor mu kontrol eder. */
 function evidenceMentionsEntity(
   evidence: string,

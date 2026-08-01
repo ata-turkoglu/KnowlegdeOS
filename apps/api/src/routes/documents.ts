@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ApiConfig } from "../config/env.js";
 import { isHttpError } from "../lib/http-errors.js";
 import {
+  clearStoredDocumentGraph,
   getStoredDocumentDetail,
   getStoredDocumentStatuses,
   getStoredDocumentHash,
@@ -509,4 +510,9 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
       }
     }
   );
+
+  app.delete<{ Params: { workspaceSlug: string; documentName: string } }>("/api/documents/:workspaceSlug/:documentName/graph", async (request, reply) => {
+    try { return await clearStoredDocumentGraph(config, request.params); }
+    catch (error) { return handleError(reply, error); }
+  });
 }

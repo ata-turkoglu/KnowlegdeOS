@@ -6,7 +6,7 @@ import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { createDatabaseClient } from '@knowledgeos/database';
 import { loadConfig } from '../../src/config/env.js';
-import { replaceDocumentEntities, replaceDocumentRelationships } from '../../src/services/entities.js';
+import { clearDocumentGraph, replaceDocumentEntities, replaceDocumentRelationships } from '../../src/services/entities.js';
 import { ensureWorkspaceStorage } from '../../src/services/storage.js';
 
 function testUrl(t: TestContext) {
@@ -47,6 +47,11 @@ test('grounded aliases and relationships persist their provenance', async (t) =>
     assert.deepEqual(alias, { document_id: document.id, provider: 'openai', model: 'fixture-model' });
     const [edge] = await client.queryClient<{ provider: string; model: string }[]>`select provider, model from relationships where document_id = ${document.id}`;
     assert.deepEqual(edge, { provider: 'openai', model: 'fixture-model' });
+    assert.deepEqual(await clearDocumentGraph(config, slug, document.id), { relationships: 1, claims: 0, aliases: 1 });
+    const [remaining] = await client.queryClient<{ aliases: number; relationships: number }[]>`
+      select (select count(*)::int from entity_aliases where document_id = ${document.id}) as aliases,
+             (select count(*)::int from relationships where document_id = ${document.id}) as relationships`;
+    assert.deepEqual(remaining, { aliases: 0, relationships: 0 });
   } finally {
     await client.queryClient`delete from workspaces where slug = ${slug}`;
     await client.close();

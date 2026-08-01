@@ -12,7 +12,7 @@ import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
 import { ensureWorkspaceStorage, getWorkspaceStoragePaths, writeFileAtomically, writeWorkspaceMetadata } from "./storage.js";
-import { metadataEntityCandidates, replaceDocumentClaims, replaceDocumentEntities, replaceDocumentPropertyReferences, replaceDocumentRelationships, type EntityAliasInput } from "./entities.js";
+import { clearDocumentGraph, metadataEntityCandidates, replaceDocumentClaims, replaceDocumentEntities, replaceDocumentPropertyReferences, replaceDocumentRelationships, type EntityAliasInput } from "./entities.js";
 import { getLlmProviderForSelection } from "./ai-providers.js";
 import { initialIndexingStageResults, resolveIndexingPlan, type IndexingPlan, type IndexingRequestMode, type IndexingStageName } from './indexing-plan.js';
 import { getWorkspaceIngestionSettings, matchesIngestionSettings, type WorkspaceIngestionSettings } from "./workspace-settings.js";
@@ -109,6 +109,18 @@ export async function checkUploadConflicts(config: ApiConfig, input: { workspace
 export async function getStoredDocumentHash(config: ApiConfig, input: { workspaceSlug?: string; filename: string }) { const slug = slugify(input.workspaceSlug?.trim() || "inbox"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const filename = safeFileName(input.filename); const [row] = await db.select().from(documents).where(and(eq(documents.workspaceId, ws.id), eq(documents.filename, filename))).limit(1); return { documentName: nameOf(filename), hash: row?.status === "INDEXED" ? row.hash : null, status: row?.status === "INDEXED" ? row.status : null }; }); }
 export async function listStoredDocuments(config: ApiConfig, workspaceSlug: string): Promise<DocumentListItem[]> { const slug = slugify(workspaceSlug || "merter-arsivi"); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const rows = await db.select({ document: documents, chunks: sql<number>`count(distinct ${documentChunks.id})`, entities: sql<number>`count(distinct ${documentEntities.id})` }).from(documents).leftJoin(documentChunks, eq(documentChunks.documentId, documents.id)).leftJoin(documentEntities, eq(documentEntities.documentId, documents.id)).where(eq(documents.workspaceId, ws.id)).groupBy(documents.id).orderBy(documents.filename); return rows.map((row) => listItem(row.document, slug, Number(row.chunks), Number(row.entities))); }); }
 export async function getStoredDocumentDetail(config: ApiConfig, input: { workspaceSlug: string; documentName: string }): Promise<DocumentDetail> { const slug = slugify(input.workspaceSlug || "merter-arsivi"), wanted = slugify(input.documentName); return withDb(config, async ({ db }) => { const ws = await ensureWorkspace(db, config, slug); const rows = await db.select().from(documents).where(eq(documents.workspaceId, ws.id)); const row = rows.find((item) => nameOf(item.filename) === wanted); if (!row) throw new HttpError(404, "Document not found."); const [chunks, entityRows, markdown] = await Promise.all([db.select().from(documentChunks).where(eq(documentChunks.documentId, row.id)).orderBy(documentChunks.chunkIndex), db.select({ type: workspaceFields.label, value: entityTable.canonicalValue, confidence: documentEntities.confidence, evidenceSnippet: documentEntities.evidenceSnippet, source: documentEntities.source }).from(documentEntities).innerJoin(entityTable, eq(entityTable.id, documentEntities.entityId)).innerJoin(workspaceFields, eq(workspaceFields.id, entityTable.fieldId)).where(eq(documentEntities.documentId, row.id)), readFile(row.markdownPath, "utf8")]); return { ...listItem(row, slug, chunks.length, entityRows.length), hash: row.hash, summary: row.summary, markdown, quality: inspectIngestionQuality(chunks as unknown as IngestionResult["chunks"]), chunks: chunks.map((chunk) => ({ chunkIndex: chunk.chunkIndex, heading: chunk.heading ?? wanted, tokenCount: chunk.tokenCount, content: chunk.content })), entities: entityRows }; }); }
+export async function clearStoredDocumentGraph(config: ApiConfig, input: { workspaceSlug: string; documentName: string }) {
+  const slug = slugify(input.workspaceSlug || 'merter-arsivi');
+  const wanted = slugify(input.documentName);
+  const documentId = await withDb(config, async ({ db }) => {
+    const ws = await ensureWorkspace(db, config, slug);
+    const rows = await db.select({ id: documents.id, filename: documents.filename }).from(documents).where(eq(documents.workspaceId, ws.id));
+    const document = rows.find((row) => nameOf(row.filename) === wanted);
+    if (!document) throw new HttpError(404, 'Document not found.');
+    return document.id;
+  });
+  return clearDocumentGraph(config, slug, documentId);
+}
 export async function getStoredDocumentStatuses(config: ApiConfig, input: { workspaceSlug: string; documentNames: string[] }) { const items = await listStoredDocuments(config, input.workspaceSlug); return input.documentNames.map((value) => ({ documentName: slugify(value), status: items.find((item) => item.documentName === slugify(value))?.status ?? "MISSING" as const })); }
 
 export async function storeUploadedDocument(config: ApiConfig, input: { workspaceSlug?: string; title?: string; markdownFile: SavedMultipartFile; originalFile?: SavedMultipartFile; signal?: AbortSignal }): Promise<UploadedDocument> {
