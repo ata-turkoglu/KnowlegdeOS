@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { createDatabaseClient } from "@knowledgeos/database";
 import { loadConfig } from "../../src/config/env.js";
-import { getLexicalSemanticContext } from "../../src/services/semantic-search.js";
+import { getLexicalSemanticContext, searchSemanticDocuments } from "../../src/services/semantic-search.js";
 import { searchEntityDocuments } from "../../src/services/search.js";
 import { registerWorkspaceMetadataFields, getWorkspaceFields, replaceDocumentFieldValues } from "../../src/services/workspace-fields.js";
 import { replaceDocumentMetadataEntities } from "../../src/services/entities.js";
@@ -29,10 +29,10 @@ test("PostgreSQL lexical and entity retrieval return seeded evidence", async (t)
     const [workspace] = await client.queryClient<{ id: string }[]>`insert into workspaces (slug, name, storage_path) values (${slug}, 'RAG Fixture', ${`/test/${slug}`}) returning id`;
     const [document] = await client.queryClient<{ id: string }[]>`
       insert into documents (workspace_id, filename, title, markdown_path, content, normalized_content, document_type, document_date, status, hash)
-      values (${workspace.id}, 'tapu-192.md', 'Tapu 192', '/test/tapu-192.md', 'Ayşe Demir 192 parsel sahibidir.', 'ayse demir 192 parsel sahibidir', 'tapu', '2024-05-03', 'INDEXED', ${`hash-${suffix}`}) returning id`;
+      values (${workspace.id}, 'tapu-192.md', 'Tapu 192', '/test/tapu-192.md', 'Ayşe Demir 192 parsel sahibidir. Hüseyin Hüsnü Subaşı 12.6.1964 tarihinde İstanbul''da vefat etti.', 'ayse demir 192 parsel sahibidir huseyin husnu subasi 12 6 1964 tarihinde istanbul da vefat etti', 'tapu', '2024-05-03', 'INDEXED', ${`hash-${suffix}`}) returning id`;
     await client.queryClient`
       insert into document_chunks (document_id, chunk_index, content, normalized_content, content_hash, token_count)
-      values (${document.id}, 0, 'Ayşe Demir 192 parsel sahibidir.', 'ayse demir 192 parsel sahibidir', encode(digest(convert_to('Ayşe Demir 192 parsel sahibidir.', 'UTF8'), 'sha256'), 'hex'), 8)`;
+      values (${document.id}, 0, 'Ayşe Demir 192 parsel sahibidir. Hüseyin Hüsnü Subaşı 12.6.1964 tarihinde İstanbul''da vefat etti.', 'ayse demir 192 parsel sahibidir huseyin husnu subasi 12 6 1964 tarihinde istanbul da vefat etti', encode(digest(convert_to('Ayşe Demir 192 parsel sahibidir. Hüseyin Hüsnü Subaşı 12.6.1964 tarihinde İstanbul''da vefat etti.', 'UTF8'), 'sha256'), 'hex'), 18)`;
     const [field] = await client.queryClient<{ id: string }[]>`
       insert into workspace_fields (workspace_id, key, label, value_type)
       values (${workspace.id}, 'people', 'People', 'TEXT_ARRAY') returning id`;
@@ -44,11 +44,20 @@ test("PostgreSQL lexical and entity retrieval return seeded evidence", async (t)
 
     const config = { ...loadConfig(), databaseUrl: url };
     const lexical = await getLexicalSemanticContext(config, slug, "192 parsel", 10, { year: "2024", documentType: "tapu" });
+    const dateLexical = await getLexicalSemanticContext(config, slug, "What happened on 12 June 1964?", 10);
     const entityResult = await searchEntityDocuments(config, { workspaceSlug: slug, query: "Ayşe Demir hangi belgelerde geçiyor?", filters: { year: "2024" } });
     assert.equal(lexical[0]?.documentName, "tapu-192");
     assert.equal(lexical[0]?.sourceType, "LEXICAL");
+    assert.equal(dateLexical[0]?.documentId, document.id);
+    assert.match(dateLexical[0]?.content ?? "", /12\.6\.1964/);
     assert.equal(entityResult.matchedEntity?.canonicalValue, "Ayşe Demir");
     assert.equal(entityResult.retrievedDocuments[0]?.documentId, document.id);
+    const emptyEntityScope = await searchEntityDocuments(config, { workspaceSlug: slug, query: "Ayşe Demir", filters: { allowedDocumentIds: [] } });
+    const emptyLexicalScope = await getLexicalSemanticContext(config, slug, "12.6.1964", 10, { allowedDocumentIds: [] });
+    const emptySemanticScope = await searchSemanticDocuments(config, { workspaceSlug: slug, query: "12.6.1964", filters: { allowedDocumentIds: [] } });
+    assert.equal(emptyEntityScope.retrievedDocuments.length, 0);
+    assert.equal(emptyLexicalScope.length, 0);
+    assert.equal(emptySemanticScope.results.length, 0);
     const [ftsIndex] = await client.queryClient<{ exists: boolean }[]>`
       select exists(select 1 from pg_indexes where schemaname = 'public' and indexname = 'document_chunks_simple_fts_idx') as exists`;
     assert.equal(ftsIndex.exists, true);

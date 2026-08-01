@@ -78,3 +78,14 @@ test("OpenAI absent cached-token details does not break cached input", async (t)
   assert.equal(answer, "ok");
   assert.equal(metadata?.cacheStatus, "UNKNOWN");
 });
+
+test("OpenAI metadata JSON reserves enough output tokens for complete entity lists", async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    assert.equal(body.max_output_tokens, 16_384);
+    return new Response(JSON.stringify({ output_text: "{\"people\":[\"Ali\"]}" }), { status: 200 });
+  };
+  assert.deepEqual(await new OpenAIProvider("secret", "gpt-5-mini", .1).generateJsonObject("extract"), { people: ["Ali"] });
+});
