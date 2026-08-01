@@ -10,11 +10,11 @@ type Operation = {
   id: string;
   kind: "upload" | "index" | "reindex" | "embedding";
   targetName: string;
-  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  status: "running" | "completed" | "completed_with_warnings" | "partial" | "failed" | "cancelled" | "interrupted";
   stage: string;
   progress: number;
   error?: string;
-  retry?: { documentName?: string; useLlm?: boolean };
+  retry?: { documentName?: string; mode?: "automatic" | "user_configured"; useLlm?: boolean };
 };
 
 type Gpu = {
@@ -89,6 +89,8 @@ function OperationStatusDialog({ visible, onHide, workspaceSlug }: { visible: bo
   const label = (status: Operation["status"]) => ({
     running: isEnglish ? "Running" : "Devam ediyor",
     completed: isEnglish ? "Completed" : "Tamamlandı",
+    completed_with_warnings: isEnglish ? "Completed with warnings" : "Uyarılarla tamamlandı",
+    partial: isEnglish ? "Partially indexed" : "Kısmen indekslendi",
     failed: isEnglish ? "Failed" : "Hata",
     cancelled: isEnglish ? "Cancelled" : "İptal edildi",
     interrupted: isEnglish ? "Interrupted" : "Kesildi"
@@ -99,7 +101,7 @@ function OperationStatusDialog({ visible, onHide, workspaceSlug }: { visible: bo
     await fetch(`${apiBaseUrl}/api/documents/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(item.retry.documentName)}/reindex`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ useLlm: item.retry.useLlm === true })
+      body: JSON.stringify({ mode: item.retry.mode ?? "automatic" })
     });
   }
 

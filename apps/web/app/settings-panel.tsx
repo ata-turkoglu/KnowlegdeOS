@@ -95,7 +95,6 @@ export function SettingsPanel() {
   const [reindexing, setReindexing] = useState(false);
   const [reindexOperationId, setReindexOperationId] = useState<string | null>(null);
   const [reindexProgress, setReindexProgress] = useState<{ completed: number; total: number; documentName?: string } | null>(null);
-  const [useLlmForReindex, setUseLlmForReindex] = useState(true);
   const [cloudModels, setCloudModels] = useState<{ openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[]; embeddingModels: string[] } }>({ openai: { configured: false, llmModels: [], embeddingModels: [] }, gemini: { configured: false, llmModels: [], embeddingModels: [] }, anthropic: { configured: false, llmModels: [], embeddingModels: [] } });
   const [models, setModels] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }>>([]);
@@ -269,7 +268,7 @@ export function SettingsPanel() {
       const response = await fetch(`${apiBaseUrl}/api/settings/ingestion/${encodeURIComponent(workspaceSlug)}/reindex`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ useLlm: useLlmForReindex })
+        body: JSON.stringify({ mode: "automatic" })
       });
       const result = await response.json() as { operationId?: string; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Reindexing failed.");
@@ -609,11 +608,7 @@ export function SettingsPanel() {
               <p>
                 {language === "tr" ? `${staleDocumentCount} belge güncel ayarlarla yeniden indekslenmeli.` : `${staleDocumentCount} documents need reindexing with the current settings.`}
               </p>
-            <label className="settings-checkbox">
-              <input type="checkbox" checked={useLlmForReindex} disabled={reindexing} onChange={(event) => setUseLlmForReindex(event.target.checked)} />
-              <span>{language === "tr" ? "LLM ile entity ve özet çıkarımını da yenile" : "Also refresh LLM entity extraction and summaries"}</span>
-            </label>
-            {useLlmForReindex ? <p className="settings-note">{language === "tr" ? "Bu seçenek her belge için LLM çağrısı yapar; işlem süresini ve bulut sağlayıcı maliyetini artırabilir." : "This makes an LLM request for every document and can increase processing time and cloud-provider cost."}</p> : null}
+            <p className="settings-note">{language === "tr" ? "Otomatik plan her aşama için deterministik, yerel model, API modeli veya atlama kararını ayrı verir." : "The automatic plan decides deterministic, local-model, API-model, or skip execution independently for every stage."}</p>
               <div className="button-row">
                 <AButton type="button" tone="secondary" onClick={() => void reindexWorkspace()} disabled={reindexing}>
                   {reindexing ? (language === "tr" ? "Yeniden indeksleniyor..." : "Reindexing...") : language === "tr" ? "Tüm belgeleri yeniden indeksle" : "Reindex all documents"}

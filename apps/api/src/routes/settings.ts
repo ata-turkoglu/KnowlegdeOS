@@ -506,7 +506,7 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "Chat system prompt could not be saved." }); }
   });
 
-  app.post<{ Params: { workspaceSlug: string }; Body: { useLlm?: boolean } }>("/api/settings/ingestion/:workspaceSlug/reindex", async (request, reply) => {
+  app.post<{ Params: { workspaceSlug: string }; Body: { mode?: 'automatic' | 'user_configured'; requestedStages?: Partial<Record<'aliases' | 'relationships' | 'claims' | 'summary', boolean>>; /** @deprecated */ useLlm?: boolean } }>("/api/settings/ingestion/:workspaceSlug/reindex", async (request, reply) => {
     const workspaceSlug = slugify(request.params.workspaceSlug || "merter-arsivi");
     const activeOperationId = activeWorkspaceReindexOperations.get(workspaceSlug);
     if (activeOperationId) {
@@ -523,8 +523,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     activeWorkspaceReindexOperations.set(workspaceSlug, operationId);
     void reindexWorkspaceDocuments(config, workspaceSlug, {
       signal: controller.signal,
-      mode: request.body?.useLlm === undefined ? 'automatic' : 'user_configured',
-      requestedStages: request.body?.useLlm === undefined ? undefined : { aliases: request.body.useLlm, relationships: request.body.useLlm, claims: request.body.useLlm, summary: request.body.useLlm },
+      mode: request.body?.requestedStages || request.body?.mode === 'user_configured' ? 'user_configured' : request.body?.useLlm === undefined ? 'automatic' : 'user_configured',
+      requestedStages: request.body?.requestedStages ?? (request.body?.useLlm === undefined ? undefined : { aliases: request.body.useLlm, relationships: request.body.useLlm, claims: request.body.useLlm, summary: request.body.useLlm }),
       onProgress: (progress) => Object.assign(operation, progress)
     }).then(() => {
       operation.status = "completed";
