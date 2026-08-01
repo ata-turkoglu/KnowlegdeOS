@@ -14,7 +14,7 @@ import {
   storeUploadedDocument
 } from "../services/documents.js";
 import { getConvertedFile } from "../services/conversions.js";
-import { clearOperationHistory, createOperation, findRunningOperation, interruptAllRunningOperations, listOperations, updateOperation } from "../services/operations.js";
+import { cancelTrackedOperation, clearOperationHistory, createOperation, findRunningOperation, interruptAllRunningOperations, listOperations, updateOperation } from "../services/operations.js";
 import { getGpuMetrics } from "../services/gpu.js";
 import { embedSelectedDocuments, getEmbeddingCoverage, invalidateSemanticIndex } from "../services/semantic-search.js";
 
@@ -117,6 +117,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
   });
   app.delete<{ Params: { operationId: string } }>("/api/operations/:operationId", async (request, reply) => {
     const controller = embeddingOperations.get(request.params.operationId);
+    if (cancelTrackedOperation(request.params.operationId)) return reply.code(202).send({ status: "cancelling" });
     if (!controller) return reply.code(404).send({ error: "This operation cannot be cancelled or is no longer running." });
     controller.abort();
     return reply.code(202).send({ status: "cancelling" });

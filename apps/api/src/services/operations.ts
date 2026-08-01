@@ -4,7 +4,7 @@ import path from "node:path";
 import type { ApiConfig } from "../config/env.js";
 import { ensureWorkspaceStorage, getWorkspaceStoragePaths, resolveStorageRoot, writeFileAtomically } from "./storage.js";
 
-export type OperationKind = "upload" | "index" | "reindex" | "embedding";
+export type OperationKind = "upload" | "index" | "reindex" | "embedding" | "yaml";
 export type OperationStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
 export type StoredOperation = {
   id: string; workspaceSlug: string; kind: OperationKind; targetName: string;
@@ -16,6 +16,7 @@ export type StoredOperation = {
 const fileName = "operations.json";
 const terminal = new Set<OperationStatus>(["completed", "failed", "cancelled", "interrupted"]);
 const retentionMs = 7 * 24 * 60 * 60 * 1000;
+const controllers = new Map<string, AbortController>();
 
 async function readOperations(config: ApiConfig, workspaceSlug: string) {
   const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
@@ -57,6 +58,14 @@ export async function updateOperation(config: ApiConfig, workspaceSlug: string, 
   if (index < 0) return null; const status = update.status ?? operations[index].status;
   operations[index] = { ...operations[index], ...update, updatedAt: new Date().toISOString(), completedAt: terminal.has(status) ? new Date().toISOString() : operations[index].completedAt };
   await save(config, workspaceSlug, operations); return operations[index];
+}
+export function trackOperationController(id: string, controller: AbortController) { controllers.set(id, controller); }
+export function releaseOperationController(id: string) { controllers.delete(id); }
+export function cancelTrackedOperation(id: string) {
+  const controller = controllers.get(id);
+  if (!controller) return false;
+  controller.abort();
+  return true;
 }
 export async function interruptRunningOperations(config: ApiConfig, workspaceSlug: string) {
   const operations = await readOperations(config, workspaceSlug); let changed = false;

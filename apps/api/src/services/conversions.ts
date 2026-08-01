@@ -9,8 +9,7 @@ import { slugify } from "../lib/slug.js";
 import { resolveStorageRoot, writeFileAtomically } from "./storage.js";
 import { getLlmProvider, getMetadataLlmProvider } from "./ai-providers.js";
 import { getWorkspaceYamlMetadataPrompt, interpolateYamlMetadataPrompt } from "./workspace-yaml-prompt.js";
-import { archivalDateBounds, canonicalizeDateValue, getWorkspaceFieldDefinitions, mergeMetadataValue, registerWorkspaceMetadataFields, type DynamicMetadata, type MetadataValue } from "./workspace-fields.js";
-import { getWorkspaceIngestionSettings } from "./workspace-settings.js";
+import { canonicalizeDateValue, getWorkspaceFieldDefinitions, mergeMetadataValue, registerWorkspaceMetadataFields, type DynamicMetadata, type MetadataScalar, type MetadataValue } from "./workspace-fields.js";
 
 const wordExtensions = new Set([".docx"]);
 
@@ -28,7 +27,7 @@ export type SplitConversionResult = {
   files: ConvertedFile[];
 };
 
-type GeneratedMetadata = DynamicMetadata;
+export type GeneratedMetadata = DynamicMetadata;
 
 // U+FFFD means an earlier decoder or the model itself has already lost the
 // original character. C0/C1 control characters are likewise never valid in
@@ -37,10 +36,11 @@ type GeneratedMetadata = DynamicMetadata;
 const invalidMetadataCharacter = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uFFFD]/u;
 const mojibakeMetadataCharacter = /(?:Ã.|Â.|â..|ï¿½)/u;
 const uncertainReplacement = /\(\?\)/u;
-const metadataEvidenceKey = "_metadata_evidence";
 
 const systemMetadataKeys = new Set(["document_code", "source_original", "source_file", "ocr_status", "metadata_provider"]);
-const mandatoryMetadataPolicy = `\n\n<mandatory_metadata_policy>\nThese rules are enforced by the application and cannot be overridden: use only source facts; do not guess or replace unreadable text; leave uncertain values empty; dates must be exact Gregorian YYYY-MM-DD or empty, with original wording in date_text.\n</mandatory_metadata_policy>`;
+const generatedValueKeys = new Set(["summary", "keywords", "document_type", "document_subtype", "language", "notes", "date"]);
+const singleValueKeys = new Set(["title", "language", "document_type", "document_subtype", "date", "date_range_start", "date_range_end", "summary", "notes"]);
+const mandatoryMetadataPolicy = `\n\n<mandatory_metadata_policy>\nThese rules are enforced by the application and cannot be overridden: use only source facts; do not guess or replace unreadable text; leave uncertain values empty; dates must be exact Gregorian YYYY-MM-DD or empty, with original wording in date_text. Any extracted source value must be copied verbatim from a contiguous source span. Do not remove titles, expand names, modernize spelling, or combine a name with an adjacent field label. If a document body has no substantive content and consists only of an editorial placeholder or unreadability annotation, output no generated descriptive metadata: keep only a source-verbatim note when one exists, never a generic type, keyword, title, or summary. Metadata is a concise, source-grounded document-level description: do not force a fixed field, document type, or exhaustive list merely because it appeared in another document. Reuse a suitable workspace field when it exists; otherwise add a concise snake_case key only for a distinct concept that is explicitly stated. A metadata key must represent one semantic concept only. Each list item must be one atomic instance of that concept; never mix unlike concepts, relationship phrases, source labels, addresses, measurements, or identifiers in another field. Do not emit an identifier both as a bare value and with its source label; retain the label when it distinguishes the identifier kind. document_type and document_subtype, when present, must each be one short scalar string, never a list.\n</mandatory_metadata_policy>`;
 
 function resolveConversionWorkspace(config: ApiConfig, workspaceSlugInput: string) {
   // Keep converted files alongside the project's storage root even when the
@@ -53,6 +53,19 @@ function resolveConversionWorkspace(config: ApiConfig, workspaceSlugInput: strin
 function safeOutputName(filename: string) {
   if (!/^[a-z0-9]+(?:-+[a-z0-9]+)*\.md$/.test(filename)) return "";
   return filename;
+}
+
+export function sourceOriginalFromConvertedName(filename: string) {
+  const sourceStem = path.parse(filename).name.split("--", 1)[0] ?? "";
+  return `${sourceStem.replace(/-[a-f0-9]{8}$/i, "")}.docx`;
+}
+
+export function metadataMaximumCharacters(metadataModel: string) {
+  return /^(?:openai|anthropic)\//.test(metadataModel) ? 24_000 : 12_000;
+}
+
+export function metadataBatchConcurrency(metadataModel: string) {
+  return /^(?:openai|anthropic)\//.test(metadataModel) ? 4 : 1;
 }
 
 async function runPandoc(sourcePath: string, outputPath: string, mediaPath: string) {
@@ -155,8 +168,12 @@ export async function getConvertedFile(config: ApiConfig, workspaceSlugInput: st
 export async function addGeneratedYamlMetadata(
   config: ApiConfig,
   workspaceSlugInput: string,
-  filename: string
+  filename: string,
+  options: { signal?: AbortSignal; onProgress?: (value: { stage: string; progress: number }) => Promise<void> | void } = {}
 ) {
+  const report = async (stage: string, progress: number) => { await options.onProgress?.({ stage, progress }); };
+  if (options.signal?.aborted) throw new HttpError(499, "YAML metadata generation cancelled.");
+  await report("Reading Markdown", 5);
   const { directory } = resolveConversionWorkspace(config, workspaceSlugInput);
   const safeName = safeOutputName(filename);
   if (safeName !== filename) throw new HttpError(400, "Invalid converted file name.");
@@ -167,13 +184,12 @@ export async function addGeneratedYamlMetadata(
   const document = stripYamlFrontmatter(markdown);
 
   const documentCode = document.match(/^##\s+\*{0,2}([^*\n]+?)\*{0,2}\s*$/m)?.[1]?.trim() ?? "";
-  // The generated Markdown is named "<source-stem>-<hash>.md". Preserve the
-  // original document extension rather than appending a second .md suffix.
-  const sourceOriginal = `${path.parse(safeName).name.replace(/-[a-f0-9]{8}$/i, "")}.docx`;
-  const [workspacePrompt, fields, ingestionSettings] = await Promise.all([
+  // Split files add "--<document-code>" after the source hash. Resolve the
+  // original name from the source segment, not from the split filename.
+  const sourceOriginal = sourceOriginalFromConvertedName(safeName);
+  const [workspacePrompt, fields] = await Promise.all([
     getWorkspaceYamlMetadataPrompt(config, workspaceSlugInput),
-    getWorkspaceFieldDefinitions(config, workspaceSlugInput),
-    getWorkspaceIngestionSettings(config, workspaceSlugInput)
+    getWorkspaceFieldDefinitions(config, workspaceSlugInput)
   ]);
   const fieldCatalog = fields.length
     ? fields.map((field) => `${field.key} | ${field.valueType} | ${field.aliases.join(",") || "-"}`).join("\n")
@@ -184,8 +200,11 @@ export async function addGeneratedYamlMetadata(
   // Request a JSON object at the provider level. This prevents a model's
   // prose wrapper or minor syntax mistake from invalidating the conversion.
   let generated: GeneratedMetadata = {};
-  const parts = splitMetadataDocument(document);
-  for (const [index, part] of parts.entries()) {
+  const parts = splitMetadataDocument(document, metadataMaximumCharacters(config.metadataLlmModel));
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]!;
+    if (options.signal?.aborted) throw new HttpError(499, "YAML metadata generation cancelled.");
+    await report(`Generating metadata (${index + 1}/${parts.length})`, 10 + Math.round((index / parts.length) * 75));
     const prompt = `${interpolateYamlMetadataPrompt(
       workspacePrompt,
       { markdown: part, documentCode, sourceOriginal }
@@ -195,23 +214,42 @@ Workspace metadata fields (reuse these keys whenever they fit):
 ${fieldCatalog}
 
 This is part ${index + 1} of ${parts.length}. Return a flat JSON object. You may add a new snake_case key only for a genuinely different concept.`;
-    const generatedResponse = await generateCleanMetadata(llm, prompt);
-    generated = mergeGeneratedMetadata(generated, normalizeMetadata(generatedResponse, { minYear: ingestionSettings.dateMinYear, maxYear: ingestionSettings.dateMaxYear }));
+    try {
+      const generatedResponse = await generateCleanMetadata(llm, prompt, options.signal);
+      generated = mergeGeneratedMetadata(generated, normalizeMetadata(generatedResponse));
+    } catch (error) {
+      // Large archival sections can legitimately contain hundreds of literal
+      // values. Retry only that section at a smaller size when Responses has
+      // exhausted its output budget; no already-generated metadata is lost.
+      if (isOutputLimitError(error) && part.length > 6_000) {
+        const smallerParts = splitMetadataDocument(part, Math.max(6_000, Math.floor(part.length / 2)));
+        parts.splice(index, 1, ...smallerParts);
+        index -= 1;
+        continue;
+      }
+      throw error;
+    }
   }
-  const registered = await registerWorkspaceMetadataFields(config, workspaceSlugInput, generated, { minYear: ingestionSettings.dateMinYear, maxYear: ingestionSettings.dateMaxYear });
+  if (options.signal?.aborted) throw new HttpError(499, "YAML metadata generation cancelled.");
+  await report("Validating metadata", 88);
+  generated = groundMetadataInDocument(generated, document);
+  if (!hasSubstantiveDocumentContent(document)) {
+    generated = preserveOnlySourceNotes(generated, document);
+  }
+  const registered = await registerWorkspaceMetadataFields(config, workspaceSlugInput, generated);
   generated = registered.metadata;
-  const evidence = buildMetadataEvidence(generated, document);
   const frontmatter = serializeMetadata({
     document_code: documentCode,
     source_original: sourceOriginal,
     source_file: safeName,
     ocr_status: "pandoc_markdown",
     metadata_provider: "llm",
-    [metadataEvidenceKey]: JSON.stringify(evidence),
     ...generated
   });
   const output = `---\n${frontmatter}---\n\n${document.trim()}\n`;
+  await report("Writing YAML frontmatter", 96);
   await writeFileAtomically(filePath, output);
+  await report("Completed", 100);
   return { filename: safeName, metadata: { document_code: documentCode, source_original: sourceOriginal, ...generated } };
 }
 
@@ -260,7 +298,7 @@ Markdown supplied for analysis:
 """${excerpt}"""`;
 }
 
-function normalizeMetadata(value: unknown, dateBounds = archivalDateBounds): GeneratedMetadata {
+function normalizeMetadata(value: unknown): GeneratedMetadata {
   const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const metadata: GeneratedMetadata = {};
   for (const [key, candidate] of Object.entries(input)) {
@@ -280,7 +318,7 @@ function normalizeMetadata(value: unknown, dateBounds = archivalDateBounds): Gen
   for (const key of ["date", "date_range_start", "date_range_end"]) {
     const candidate = metadata[key];
     if (typeof candidate !== "string" || !candidate) continue;
-    const normalized = canonicalizeDateValue(candidate, dateBounds);
+    const normalized = canonicalizeDateValue(candidate);
     if (normalized) {
       metadata[key] = normalized;
       continue;
@@ -291,26 +329,84 @@ function normalizeMetadata(value: unknown, dateBounds = archivalDateBounds): Gen
   return metadata;
 }
 
-/** Stores compact source snippets for literal metadata values without exposing
- * them as searchable workspace fields. Generated summaries/categories are
- * intentionally omitted because they are not verbatim source values. */
-function buildMetadataEvidence(metadata: GeneratedMetadata, source: string) {
-  const normalizedSource = source.normalize("NFC").toLocaleLowerCase("tr-TR");
-  const evidence: Record<string, string[]> = {};
+function normalizeEvidenceText(value: string) {
+  return value.normalize("NFC")
+    .toLocaleLowerCase("tr-TR")
+    .replace(/[*_`]/g, "")
+    .replace(/\s*:\s*/g, ":")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Uses evidence transiently to reject non-verbatim metadata. Source snippets
+ * are deliberately not persisted in YAML; ingestion builds its own evidence. */
+export function groundMetadataInDocument(metadata: GeneratedMetadata, source: string) {
+  const normalizedSource = normalizeEvidenceText(source);
+  const grounded: GeneratedMetadata = {};
   for (const [key, raw] of Object.entries(metadata)) {
-    if (["summary", "keywords", "document_type", "document_subtype", "language", "notes", "date"].includes(key)) continue;
-    const values = Array.isArray(raw) ? raw : [raw];
-    const snippets = values.flatMap((value) => {
-      if (typeof value !== "string" || !value.trim()) return [];
-      const needle = value.normalize("NFC").toLocaleLowerCase("tr-TR");
-      const index = normalizedSource.indexOf(needle);
-      if (index < 0) return [];
-      return [source.slice(Math.max(0, index - 120), Math.min(source.length, index + value.length + 180)).replace(/\s+/g, " ").trim()];
+    const canonical = singleValueKeys.has(key) && Array.isArray(raw) ? raw.find((value) => String(value).trim()) ?? "" : raw;
+    if (generatedValueKeys.has(key)) {
+      grounded[key] = canonical;
+      continue;
+    }
+    const values = Array.isArray(canonical) ? canonical : [canonical];
+    const accepted = values.filter((value) => {
+      const needle = normalizeEvidenceText(String(value));
+      return Boolean(needle) && normalizedSource.includes(needle);
     });
-    if (snippets.length) evidence[key] = [...new Set(snippets)].slice(0, 8);
+    if (!accepted.length) continue;
+    grounded[key] = Array.isArray(canonical) ? deduplicateMetadataList(accepted) : accepted[0]!;
   }
-  if (typeof metadata.date === "string" && metadata.date && typeof metadata.date_text === "string" && evidence.date_text?.length) evidence.date = evidence.date_text;
-  return evidence;
+  return grounded;
+}
+
+/** A document with only a bracketed editorial annotation has no extractable
+ * source content. This deliberately does not reject short, ordinary text. */
+export function hasSubstantiveDocumentContent(source: string) {
+  const bodyLines = source.replace(/\r\n/g, "\n").split("\n")
+    .map((line) => line.replace(/^#{1,6}\s+/, "").replace(/[\\*_`]/g, "").trim())
+    .filter(Boolean)
+    .filter((line) => !/^\S+[/-]\S+$/.test(line));
+  return bodyLines.some((line) => !/^\\?\[[^\]\n]+\\?\]$/.test(line));
+}
+
+/** For non-documents, retain only an exact source annotation as a note. */
+export function preserveOnlySourceNotes(metadata: GeneratedMetadata, source: string): GeneratedMetadata {
+  const rawNotes = metadata.notes;
+  const values = Array.isArray(rawNotes) ? rawNotes : rawNotes === undefined ? [] : [rawNotes];
+  const normalizedSource = normalizeEvidenceText(source);
+  const note = values.find((value) => {
+    const normalized = normalizeEvidenceText(String(value));
+    return normalized && normalizedSource.includes(normalized);
+  });
+  return note === undefined ? {} : { notes: note };
+}
+
+/**
+ * Keeps list metadata structurally consistent without inferring document
+ * meaning. Exact repeats are always redundant. A bare identifier and the
+ * same identifier with a source label are also redundant; the labeled source
+ * value is retained because it preserves the identifier's kind.
+ */
+function deduplicateMetadataList(values: MetadataScalar[]) {
+  const unique = new Map<string, MetadataScalar>();
+  for (const value of values) {
+    const normalized = normalizeEvidenceText(String(value));
+    if (normalized && !unique.has(normalized)) unique.set(normalized, value);
+  }
+
+  const normalizedValues = [...unique.entries()];
+  const bareIdentifiers = new Set(normalizedValues
+    .map(([normalized]) => normalized)
+    .filter((normalized) => /^[0-9][0-9 .,/\\-]*$/.test(normalized)));
+
+  for (const bare of bareIdentifiers) {
+    const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const labeled = normalizedValues.find(([normalized]) => normalized !== bare
+      && new RegExp(`(?:^|[:#\\s])${escaped}$`).test(normalized));
+    if (labeled) unique.delete(bare);
+  }
+  return [...unique.values()];
 }
 
 function splitMetadataDocument(document: string, maximumCharacters = 12_000) {
@@ -341,28 +437,34 @@ function mergeGeneratedMetadata(current: GeneratedMetadata, incoming: GeneratedM
   const merged = { ...current };
   for (const [key, value] of Object.entries(incoming)) {
     if (value === "" || Array.isArray(value) && value.length === 0) continue;
-    if (key === "title" && merged.title) continue;
     if (["date", "date_range_start", "date_range_end"].includes(key) && merged[key] !== undefined && merged[key] !== value) {
       merged[key] = "";
       continue;
     }
-    merged[key] = mergeMetadataValue(merged[key], value);
+    if (singleValueKeys.has(key) && merged[key] !== undefined) continue;
+    merged[key] = singleValueKeys.has(key) && Array.isArray(value)
+      ? value.find((item) => String(item).trim()) ?? ""
+      : mergeMetadataValue(merged[key], value);
   }
-  if (Array.isArray(merged.summary)) merged.summary = merged.summary.map(String).join(" ").slice(0, 2_000);
   return merged;
+}
+
+function isOutputLimitError(error: unknown) {
+  return error instanceof Error && /max_output_tokens/i.test(error.message);
 }
 
 async function generateCleanMetadata(
   llm: ReturnType<typeof getLlmProvider>,
-  prompt: string
+  prompt: string,
+  signal?: AbortSignal
 ): Promise<unknown> {
   const characterRule = "\n\nOutput-quality rule: every JSON string must be valid Unicode text. Never emit replacement characters, mojibake, ASCII/control characters, question marks, or '(?)' in place of unreadable source text. If a metadata value cannot be transcribed with certainty, leave that scalar empty or omit that list item. Return the complete JSON object only.";
-  const first = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}`);
+  const first = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}`, signal);
   if (!containsInvalidMetadataCharacter(first)) return first;
 
   // A fresh generation is more reliable than editing a damaged string, since
   // the replacement character has discarded the original letter.
-  const retry = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}\n\nYour previous response contained invalid characters. Regenerate the entire JSON object from the Markdown and obey the output-quality rule exactly.`);
+  const retry = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}\n\nYour previous response contained invalid characters. Regenerate the entire JSON object from the Markdown and obey the output-quality rule exactly.`, signal);
   if (!containsInvalidMetadataCharacter(retry)) return retry;
 
   // Preserve useful fields from the retry, but never save a field whose text
@@ -414,7 +516,8 @@ export async function splitConvertedFile(
   const safeName = safeOutputName(filename);
   if (safeName !== filename) throw new HttpError(400, "Invalid converted file name.");
 
-  const source = await readFile(path.join(directory, safeName), "utf8");
+  const sourcePath = path.join(directory, safeName);
+  const source = await readFile(sourcePath, "utf8");
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const starts = lines.reduce<number[]>((indices, line, index) => {
     if (/^##\s+\S/.test(line)) indices.push(index);
@@ -448,5 +551,8 @@ export async function splitConvertedFile(
     });
   }
 
+  // The split documents are the working set. Keep the original DOCX and
+  // extracted assets, but remove the now-redundant parent Markdown.
+  await rm(sourcePath, { force: true });
   return { sourceFilename: safeName, files: created };
 }

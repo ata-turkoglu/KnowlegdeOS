@@ -8,29 +8,22 @@ export type WorkspaceIngestionSettings = {
   chunkOverlap: number;
   semanticTopK: number;
   similarityThreshold: number;
-  dateMinYear: number;
-  dateMaxYear: number;
 };
 
 export const defaultIngestionSettings: WorkspaceIngestionSettings = {
   chunkSize: 450,
   chunkOverlap: 60,
   semanticTopK: 5,
-  similarityThreshold: 0.25,
-  dateMinYear: 1800,
-  dateMaxYear: new Date().getUTCFullYear()
+  similarityThreshold: 0.25
 };
 
 function sanitize(value: Partial<WorkspaceIngestionSettings>): WorkspaceIngestionSettings {
   const chunkSize = boundedInteger(value.chunkSize, defaultIngestionSettings.chunkSize, 100, 2_000);
-  const dateMinYear = boundedInteger(value.dateMinYear, defaultIngestionSettings.dateMinYear, 1, new Date().getUTCFullYear());
   return {
     chunkSize,
     chunkOverlap: boundedInteger(value.chunkOverlap, defaultIngestionSettings.chunkOverlap, 0, chunkSize - 1),
     semanticTopK: boundedInteger(value.semanticTopK, defaultIngestionSettings.semanticTopK, 1, 20),
-    similarityThreshold: boundedNumber(value.similarityThreshold, defaultIngestionSettings.similarityThreshold, 0, 1),
-    dateMinYear,
-    dateMaxYear: boundedInteger(value.dateMaxYear, defaultIngestionSettings.dateMaxYear, dateMinYear, new Date().getUTCFullYear())
+    similarityThreshold: boundedNumber(value.similarityThreshold, defaultIngestionSettings.similarityThreshold, 0, 1)
   };
 }
 
@@ -65,9 +58,7 @@ export function matchesIngestionSettings(
   return normalized.chunkSize === expected.chunkSize
     && normalized.chunkOverlap === expected.chunkOverlap
     && normalized.semanticTopK === expected.semanticTopK
-    && normalized.similarityThreshold === expected.similarityThreshold
-    && normalized.dateMinYear === expected.dateMinYear
-    && normalized.dateMaxYear === expected.dateMaxYear;
+    && normalized.similarityThreshold === expected.similarityThreshold;
 }
 
 function boundedInteger(value: unknown, fallback: number, min: number, max: number) {

@@ -4,7 +4,7 @@ import path from "node:path";
 
 export type LlmTemperatureProfile = "extraction" | "answer" | "summary" | "creative";
 export type LlmTemperatures = Record<LlmTemperatureProfile, number>;
-export type HybridApiProvider = "none" | "openai" | "gemini" | "anthropic";
+export type ApiRerankerProvider = "none" | "openai" | "gemini" | "anthropic";
 export type SmallModelRole = "queryNormalizer" | "queryAnalyzer" | "ocrCorrector" | "conversationSummary" | "evidencePreparer" | "contradictionDetector" | "entityLinker" | "reranker" | "fieldMatcher";
 
 function temperature(value: string | undefined, fallback: number) {
@@ -60,8 +60,8 @@ export type ApiConfig = {
   evidencePreparerModel: string;
   contradictionDetectorModel: string;
   fieldMatcherModel: string;
-  hybridApiProvider: HybridApiProvider;
-  hybridApiModel: string;
+  apiRerankerProvider: ApiRerankerProvider;
+  apiRerankerModel: string;
   llmContextCacheEnabled: boolean;
   llmContextCacheLogUsage: boolean;
   /** 0 selects an automatic model-aware RAG input budget. */
@@ -124,8 +124,8 @@ export function loadConfig(): ApiConfig {
     evidencePreparerModel: process.env.SMALL_EVIDENCE_PREPARER_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
     contradictionDetectorModel: process.env.SMALL_CONTRADICTION_DETECTOR_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
     fieldMatcherModel: process.env.SMALL_FIELD_MATCHER_MODEL ?? process.env.OLLAMA_EMBEDDING_MODEL ?? "bge-m3:latest",
-    hybridApiProvider: (["openai", "gemini", "anthropic"] as const).includes(process.env.HYBRID_API_PROVIDER as "openai") ? process.env.HYBRID_API_PROVIDER as Exclude<HybridApiProvider, "none"> : "none",
-    hybridApiModel: process.env.HYBRID_API_MODEL ?? "",
+    apiRerankerProvider: (["openai", "gemini", "anthropic"] as const).includes((process.env.RERANKER_API_PROVIDER ?? process.env.HYBRID_API_PROVIDER) as "openai") ? (process.env.RERANKER_API_PROVIDER ?? process.env.HYBRID_API_PROVIDER) as Exclude<ApiRerankerProvider, "none"> : "none",
+    apiRerankerModel: process.env.RERANKER_API_MODEL ?? process.env.HYBRID_API_MODEL ?? "",
     llmContextCacheEnabled: enabled(process.env.LLM_CONTEXT_CACHE_ENABLED, true),
     llmContextCacheLogUsage: enabled(process.env.LLM_CONTEXT_CACHE_LOG_USAGE, true),
     ragSoftInputTokens: Math.max(0, Number(process.env.RAG_SOFT_INPUT_TOKENS ?? 0)),

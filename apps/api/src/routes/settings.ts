@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { getEnvironmentPath, type ApiConfig, type HybridApiProvider, type LlmTemperatureProfile } from "../config/env.js";
+import { getEnvironmentPath, type ApiConfig, type ApiRerankerProvider, type LlmTemperatureProfile } from "../config/env.js";
 import { slugify } from "../lib/slug.js";
 import { getWorkspaceIngestionSettings, saveWorkspaceIngestionSettings, type WorkspaceIngestionSettings } from "../services/workspace-settings.js";
 import { getWorkspaceYamlMetadataPrompt, saveWorkspaceYamlMetadataPrompt } from "../services/workspace-yaml-prompt.js";
@@ -216,7 +216,11 @@ async function restoreSelectedModels(config: ApiConfig) {
       evidencePreparerModel?: string;
       contradictionDetectorModel?: string;
       fieldMatcherModel?: string;
-      hybridApiProvider?: HybridApiProvider;
+      apiRerankerProvider?: ApiRerankerProvider;
+      apiRerankerModel?: string;
+      /** @deprecated Backward-compatible read for pre-rename settings. */
+      hybridApiProvider?: ApiRerankerProvider;
+      /** @deprecated Backward-compatible read for pre-rename settings. */
       hybridApiModel?: string;
     };
     if (saved.llmProvider) config.llmProvider = saved.llmProvider;
@@ -250,11 +254,17 @@ async function restoreSelectedModels(config: ApiConfig) {
     if (saved.contradictionDetectorModel) config.contradictionDetectorModel = saved.contradictionDetectorModel;
     if (saved.metadataLlmModel) config.metadataLlmModel = saved.metadataLlmModel;
     if (saved.fieldMatcherModel) config.fieldMatcherModel = saved.embeddingProvider === "openai" && !saved.fieldMatcherModel.includes("/") ? `openai/${saved.fieldMatcherModel}` : saved.fieldMatcherModel;
-    if (saved.hybridApiProvider && ["none", "openai", "gemini", "anthropic"].includes(saved.hybridApiProvider)) config.hybridApiProvider = saved.hybridApiProvider;
-    if (saved.hybridApiModel) config.hybridApiModel = saved.hybridApiModel;
-    const restoredReranker = smallModelSelection(config.rerankerModel);
-    config.hybridApiProvider = restoredReranker.provider === "openai" || restoredReranker.provider === "anthropic" ? restoredReranker.provider : "none";
-    config.hybridApiModel = config.hybridApiProvider === "none" ? "" : restoredReranker.model;
+    const savedApiProvider = saved.apiRerankerProvider ?? saved.hybridApiProvider;
+    const savedApiModel = saved.apiRerankerModel ?? saved.hybridApiModel;
+    if (savedApiProvider && ["none", "openai", "gemini", "anthropic"].includes(savedApiProvider)) config.apiRerankerProvider = savedApiProvider;
+    if (savedApiModel) config.apiRerankerModel = savedApiModel;
+    // Reranking has two intentionally separate lanes.  Older settings used one
+    // model field for both and could therefore make the "local" lane call an
+    // API. Keep the explicit hybrid settings and migrate a legacy API-valued
+    // local reranker back to Ollama.
+    if (smallModelSelection(config.rerankerModel).provider !== "ollama") {
+      config.rerankerModel = process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b";
+    }
     if (!saved.entityLinkerModel) config.entityLinkerModel = process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b";
     if (!saved.rerankerModel) config.rerankerModel = process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b";
     if (!saved.queryNormalizerModel) config.queryNormalizerModel = process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b";
@@ -287,7 +297,7 @@ async function persistSelectedModels(config: ApiConfig) {
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(
     target,
-    JSON.stringify({ llmModel: activeLlmModel(config), metadataLlmModel: config.metadataLlmModel, embeddingModel: activeEmbeddingModel(config), llmProvider: config.llmProvider, embeddingProvider: config.embeddingProvider, queryNormalizerModel: config.queryNormalizerModel, queryAnalyzerModel: config.queryAnalyzerModel, ocrCorrectorModel: config.ocrCorrectorModel, conversationSummaryModel: config.conversationSummaryModel, evidencePreparerModel: config.evidencePreparerModel, contradictionDetectorModel: config.contradictionDetectorModel, entityLinkerModel: config.entityLinkerModel, rerankerModel: config.rerankerModel, fieldMatcherModel: config.fieldMatcherModel, hybridApiProvider: config.hybridApiProvider, hybridApiModel: config.hybridApiModel, llmTemperature: config.llmTemperature, llmTemperatures: config.llmTemperatures, ragSoftInputTokens: config.ragSoftInputTokens, ragReservedOutputTokens: config.ragReservedOutputTokens }, null, 2),
+    JSON.stringify({ llmModel: activeLlmModel(config), metadataLlmModel: config.metadataLlmModel, embeddingModel: activeEmbeddingModel(config), llmProvider: config.llmProvider, embeddingProvider: config.embeddingProvider, queryNormalizerModel: config.queryNormalizerModel, queryAnalyzerModel: config.queryAnalyzerModel, ocrCorrectorModel: config.ocrCorrectorModel, conversationSummaryModel: config.conversationSummaryModel, evidencePreparerModel: config.evidencePreparerModel, contradictionDetectorModel: config.contradictionDetectorModel, entityLinkerModel: config.entityLinkerModel, rerankerModel: config.rerankerModel, fieldMatcherModel: config.fieldMatcherModel, apiRerankerProvider: config.apiRerankerProvider, apiRerankerModel: config.apiRerankerModel, llmTemperature: config.llmTemperature, llmTemperatures: config.llmTemperatures, ragSoftInputTokens: config.ragSoftInputTokens, ragReservedOutputTokens: config.ragReservedOutputTokens }, null, 2),
     "utf8"
   );
   await writeEnvironmentValues({
@@ -314,8 +324,8 @@ async function persistSelectedModels(config: ApiConfig) {
     SMALL_EVIDENCE_PREPARER_MODEL: config.evidencePreparerModel,
     SMALL_CONTRADICTION_DETECTOR_MODEL: config.contradictionDetectorModel,
     SMALL_FIELD_MATCHER_MODEL: config.fieldMatcherModel,
-    HYBRID_API_PROVIDER: config.hybridApiProvider,
-    HYBRID_API_MODEL: config.hybridApiModel,
+    RERANKER_API_PROVIDER: config.apiRerankerProvider,
+    RERANKER_API_MODEL: config.apiRerankerModel,
     RAG_SOFT_INPUT_TOKENS: String(config.ragSoftInputTokens),
     RAG_RESERVED_OUTPUT_TOKENS: String(config.ragReservedOutputTokens),
     LLM_TEMPERATURE: String(config.llmTemperature),
@@ -367,8 +377,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
       evidencePreparerModel: config.evidencePreparerModel,
       contradictionDetectorModel: config.contradictionDetectorModel,
       fieldMatcherModel: config.fieldMatcherModel,
-      hybridApiProvider: config.hybridApiProvider,
-      hybridApiModel: config.hybridApiModel,
+      apiRerankerProvider: config.apiRerankerProvider,
+      apiRerankerModel: config.apiRerankerModel,
       smallModelMetrics: getSmallModelMetrics(),
       llmTemperature: config.llmTemperature,
       llmTemperatures: config.llmTemperatures,
@@ -385,7 +395,7 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
   });
 
   app.put<{
-    Body: { llmModel?: string; metadataLlmModel?: string; embeddingModel?: string; queryNormalizerModel?: string; queryAnalyzerModel?: string; ocrCorrectorModel?: string; conversationSummaryModel?: string; evidencePreparerModel?: string; contradictionDetectorModel?: string; entityLinkerModel?: string; rerankerModel?: string; fieldMatcherModel?: string; hybridApiProvider?: HybridApiProvider; hybridApiModel?: string; llmProvider?: Provider; embeddingProvider?: EmbeddingProvider; llmTemperature?: number; llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number };
+    Body: { llmModel?: string; metadataLlmModel?: string; embeddingModel?: string; queryNormalizerModel?: string; queryAnalyzerModel?: string; ocrCorrectorModel?: string; conversationSummaryModel?: string; evidencePreparerModel?: string; contradictionDetectorModel?: string; entityLinkerModel?: string; rerankerModel?: string; fieldMatcherModel?: string; apiRerankerProvider?: ApiRerankerProvider; apiRerankerModel?: string; llmProvider?: Provider; embeddingProvider?: EmbeddingProvider; llmTemperature?: number; llmTemperatures?: Partial<Record<LlmTemperatureProfile, number>>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number };
   }>("/api/settings/models", async (request, reply) => {
     const llmModel = request.body?.llmModel?.trim();
     const metadataLlmModel = request.body?.metadataLlmModel?.trim();
@@ -400,11 +410,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     const contradictionDetectorModel = request.body?.contradictionDetectorModel?.trim();
     const fieldMatcherModel = request.body?.fieldMatcherModel?.trim();
     const llmProvider = request.body?.llmProvider ?? "ollama";
-    const rerankerSelection = rerankerModel ? smallModelSelection(rerankerModel) : { provider: "ollama" as const, model: "" };
-    // The reranker's Local/API radio is the single source of truth for the
-    // ambiguity route as well as the normal rerank route.
-    const hybridApiProvider: HybridApiProvider = rerankerSelection.provider === "openai" || rerankerSelection.provider === "anthropic" ? rerankerSelection.provider : "none";
-    const hybridApiModel = hybridApiProvider === "none" ? "" : rerankerSelection.model;
+    const apiRerankerProvider = request.body?.apiRerankerProvider ?? config.apiRerankerProvider;
+    const apiRerankerModel = request.body?.apiRerankerModel?.trim() ?? config.apiRerankerModel;
     const embeddingProvider = request.body?.embeddingProvider ?? "ollama";
     const llmTemperature = request.body?.llmTemperature ?? config.llmTemperature;
     const ragSoftInputTokens = request.body?.ragSoftInputTokens ?? config.ragSoftInputTokens;
@@ -417,6 +424,11 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     if (!llmModel || !metadataLlmModel || !embeddingModel || !queryNormalizerModel || !queryAnalyzerModel || !ocrCorrectorModel || !conversationSummaryModel || !evidencePreparerModel || !contradictionDetectorModel || !entityLinkerModel || !rerankerModel || !fieldMatcherModel) {
       return reply.code(400).send({ message: "All primary and small-task models are required." });
     }
+
+    if (smallModelSelection(rerankerModel).provider !== "ollama") return reply.code(400).send({ message: "The local reranker must use an installed Ollama model." });
+    if (!["none", "openai", "gemini", "anthropic"].includes(apiRerankerProvider)) return reply.code(400).send({ message: "Invalid API reranker provider." });
+    if (apiRerankerProvider !== "none" && !apiRerankerModel) return reply.code(400).send({ message: "Select an API reranker model." });
+    if (apiRerankerProvider === "openai" && (!config.openaiApiKey || !modelLooksCompatible("openai", apiRerankerModel)) || apiRerankerProvider === "gemini" && (!config.geminiApiKey || !modelLooksCompatible("gemini", apiRerankerModel)) || apiRerankerProvider === "anthropic" && (!config.anthropicApiKey || !modelLooksCompatible("anthropic", apiRerankerModel))) return reply.code(400).send({ message: "The API reranker provider or model is not configured." });
 
     if (!["ollama", "openai", "gemini", "anthropic"].includes(llmProvider) || !["ollama", "openai", "gemini"].includes(embeddingProvider)) return reply.code(400).send({ message: "Invalid AI provider." });
     if (![llmTemperature, ...Object.values(llmTemperatures)].every((value) => Number.isFinite(value) && value >= 0 && value <= 2)) return reply.code(400).send({ message: "Temperature must be between 0 and 2." });
@@ -450,13 +462,13 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     config.contradictionDetectorModel = contradictionDetectorModel;
     config.metadataLlmModel = metadataLlmModel;
     config.fieldMatcherModel = fieldMatcherModel;
-    config.hybridApiProvider = hybridApiProvider;
-    config.hybridApiModel = hybridApiProvider === "none" ? "" : hybridApiModel;
+    config.apiRerankerProvider = apiRerankerProvider;
+    config.apiRerankerModel = apiRerankerProvider === "none" ? "" : apiRerankerModel;
     if (llmProvider === "ollama") config.ollamaLlmModel = llmModel; else if (llmProvider === "openai") config.openaiLlmModel = llmModel; else if (llmProvider === "gemini") config.geminiLlmModel = llmModel; else config.anthropicLlmModel = llmModel;
     if (embeddingProvider === "ollama") config.ollamaEmbeddingModel = embeddingModel; else if (embeddingProvider === "openai") config.openaiEmbeddingModel = embeddingModel; else config.geminiEmbeddingModel = embeddingModel;
     invalidateCapabilities();
     await persistSelectedModels(config);
-    return { llmModel, metadataLlmModel, embeddingModel, queryNormalizerModel, queryAnalyzerModel, ocrCorrectorModel, conversationSummaryModel, evidencePreparerModel, contradictionDetectorModel, entityLinkerModel, rerankerModel, fieldMatcherModel, hybridApiProvider, hybridApiModel: config.hybridApiModel, llmTemperature, llmTemperatures, ragSoftInputTokens, ragReservedOutputTokens, capabilities: await resolveModelCapabilities(config, true) };
+    return { llmModel, metadataLlmModel, embeddingModel, queryNormalizerModel, queryAnalyzerModel, ocrCorrectorModel, conversationSummaryModel, evidencePreparerModel, contradictionDetectorModel, entityLinkerModel, rerankerModel, fieldMatcherModel, apiRerankerProvider, apiRerankerModel: config.apiRerankerModel, llmTemperature, llmTemperatures, ragSoftInputTokens, ragReservedOutputTokens, capabilities: await resolveModelCapabilities(config, true) };
   });
 
   app.post("/api/settings/model-capabilities/refresh", async () => {

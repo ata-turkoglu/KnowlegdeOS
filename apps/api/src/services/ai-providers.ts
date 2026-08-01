@@ -32,12 +32,12 @@ export function getMetadataLlmProvider(config: ApiConfig): LLMProvider {
   const selected = config.metadataLlmModel || config.ollamaLlmModel;
   return providerForSelection(config, selected, config.llmTemperatures.extraction);
 }
-export function getHybridApiProvider(config: ApiConfig): LLMProvider | null {
+export function getApiRerankerProvider(config: ApiConfig): LLMProvider | null {
   const temperature = config.llmTemperatures.extraction;
-  if (!config.hybridApiModel || config.hybridApiProvider === "none") return null;
-  if (config.hybridApiProvider === "openai") return new OpenAIProvider(requireKey(config.openaiApiKey, "OpenAI"), config.hybridApiModel, temperature);
-  if (config.hybridApiProvider === "gemini") return new GeminiProvider(requireKey(config.geminiApiKey, "Gemini"), config.hybridApiModel, temperature);
-  return new AnthropicProvider(requireKey(config.anthropicApiKey, "Anthropic"), config.hybridApiModel, temperature, config.anthropicBaseUrl);
+  if (!config.apiRerankerModel || config.apiRerankerProvider === "none") return null;
+  if (config.apiRerankerProvider === "openai") return new OpenAIProvider(requireKey(config.openaiApiKey, "OpenAI"), config.apiRerankerModel, temperature);
+  if (config.apiRerankerProvider === "gemini") return new GeminiProvider(requireKey(config.geminiApiKey, "Gemini"), config.apiRerankerModel, temperature);
+  return new AnthropicProvider(requireKey(config.anthropicApiKey, "Anthropic"), config.apiRerankerModel, temperature, config.anthropicBaseUrl);
 }
 export function getEmbeddingProvider(config: ApiConfig): EmbeddingProvider {
   if (config.embeddingProvider === "openai") return new OpenAIEmbeddingProvider(requireKey(config.openaiApiKey, "OpenAI"), config.openaiEmbeddingModel);

@@ -1,4 +1,4 @@
-import type { HybridApiProvider } from "../config/env.js";
+import type { ApiRerankerProvider } from "../config/env.js";
 import type { ExecutionPlan } from "./execution-planner.js";
 import type { RetrievalCandidate } from "./rag-core.js";
 
@@ -8,7 +8,7 @@ export function decideHybridRerankRoute(input: {
   plan: ExecutionPlan;
   candidates: RetrievalCandidate[];
   hasNumericAnchors: boolean;
-  apiProvider: HybridApiProvider;
+  apiProvider: ApiRerankerProvider;
   apiModel: string;
 }) {
   if (!input.plan.nodes.some((node) => node.op === "RERANK")) return { route: "skip" as const, reason: "plan_skips_rerank" };

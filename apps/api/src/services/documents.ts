@@ -265,7 +265,7 @@ export async function reindexStoredDocument(
       }));
     });
     input.onProgress?.("Updating entity index");
-    await replaceDocumentFieldValues(config, slug, document.id, ingestion.frontmatter, { minYear: settings.dateMinYear, maxYear: settings.dateMaxYear });
+    await replaceDocumentFieldValues(config, slug, document.id, ingestion.frontmatter);
     await replaceDocumentMetadataEntities(config, slug, document.id, ingestion.frontmatter);
     await replaceDocumentPropertyReferences(config, slug, document.id, ingestion.propertyReferences);
     let llmExtraction: LLMExtractionResult | undefined;

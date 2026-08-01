@@ -92,6 +92,11 @@ const extractionJsonSchema = {
   }
 } as const;
 
+// JSON extraction may include many entities and archival identifiers. Keep a
+// larger response budget than conversational defaults so the object closes
+// cleanly instead of ending with Responses' max_output_tokens status.
+const structuredJsonMaxOutputTokens = 16_384;
+
 export class OpenAIProvider implements LLMProvider {
   constructor(private readonly apiKey: string, private readonly model: string, private readonly temperature: number) {}
 
@@ -128,7 +133,10 @@ export class OpenAIProvider implements LLMProvider {
       body: JSON.stringify({
         model: this.model,
         input: prompt,
-        max_output_tokens: 4096,
+        // Metadata objects can contain several list fields (people, places,
+        // organizations, keywords, and notes). Keep enough room for the
+        // complete JSON object so Responses does not stop mid-generation.
+        max_output_tokens: structuredJsonMaxOutputTokens,
         text: {
           format: {
             type: "json_schema",
@@ -161,7 +169,7 @@ export class OpenAIProvider implements LLMProvider {
       body: JSON.stringify({
         model: this.model,
         input: prompt,
-        max_output_tokens: 4096,
+        max_output_tokens: structuredJsonMaxOutputTokens,
         text: {
           format: {
             type: "json_schema",
