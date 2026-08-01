@@ -4,24 +4,28 @@ export type ParsedMarkdown = {
 };
 
 export function parseMarkdownFrontmatter(markdown: string): ParsedMarkdown {
-  if (!markdown.startsWith("---\n")) {
+  const input = markdown.startsWith("\uFEFF") ? markdown.slice(1) : markdown;
+  const opening = input.match(/^---\r?\n/);
+  if (!opening) {
     return {
       frontmatter: {},
       content: markdown
     };
   }
 
-  const closingIndex = markdown.indexOf("\n---", 4);
+  const closing = /\r?\n---(?:\r?\n|$)/g;
+  closing.lastIndex = opening[0].length;
+  const closingMatch = closing.exec(input);
 
-  if (closingIndex === -1) {
+  if (!closingMatch) {
     return {
       frontmatter: {},
       content: markdown
     };
   }
 
-  const rawFrontmatter = markdown.slice(4, closingIndex).trim();
-  const content = markdown.slice(closingIndex + 4).trim();
+  const rawFrontmatter = input.slice(opening[0].length, closingMatch.index).replace(/\r\n/g, "\n").trim();
+  const content = input.slice(closingMatch.index + closingMatch[0].length).trim();
 
   return {
     frontmatter: parseSimpleYaml(rawFrontmatter),

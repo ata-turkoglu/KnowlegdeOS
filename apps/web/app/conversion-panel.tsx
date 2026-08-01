@@ -17,6 +17,16 @@ type ConvertedFile = {
 };
 
 type YamlFilter = "all" | "with-yaml" | "without-yaml";
+type YamlOperation = {
+  id: string;
+  kind: "yaml";
+  targetName: string;
+  documentNames?: string[];
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  stage: string;
+  progress: number;
+  error?: string;
+};
 
 export function ConversionPanel() {
   const { language } = useLanguage();
@@ -32,7 +42,7 @@ export function ConversionPanel() {
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isConverting, setIsConverting] = useState(false);
-  const [yamlGeneratingFile, setYamlGeneratingFile] = useState<string | null>(null);
+  const [yamlOperation, setYamlOperation] = useState<YamlOperation | null>(null);
   const [yamlPromptVisible, setYamlPromptVisible] = useState(false);
   const [yamlPrompt, setYamlPrompt] = useState("");
   const [isLoadingYamlPrompt, setIsLoadingYamlPrompt] = useState(false);
@@ -41,6 +51,18 @@ export function ConversionPanel() {
   const visibleFiles = files.filter((file) => file.filename.toLocaleLowerCase().includes(fileQuery.trim().toLocaleLowerCase())
     && (yamlFilter === "all" || (yamlFilter === "with-yaml" ? file.hasYaml : !file.hasYaml)));
   const yamlMissingFiles = files.filter((file) => !file.hasYaml);
+  const isGeneratingYaml = yamlOperation?.status === "running";
+  const yamlGeneratingFile = isGeneratingYaml
+    ? yamlOperation.documentNames?.find((filename) => yamlOperation.stage.startsWith(filename)) ?? null
+    : null;
+  const yamlPartMatch = yamlOperation?.stage.match(/\((\d+)\/(\d+)\)/);
+  const yamlPartCurrent = yamlPartMatch ? Number(yamlPartMatch[1]) : 0;
+  const yamlPartTotal = yamlPartMatch ? Number(yamlPartMatch[2]) : 0;
+  const yamlFileProgress = yamlPartTotal > 0 ? Math.round((yamlPartCurrent / yamlPartTotal) * 100) : yamlOperation?.progress ?? 0;
+  const yamlFileIndex = yamlGeneratingFile ? (yamlOperation?.documentNames?.indexOf(yamlGeneratingFile) ?? -1) : -1;
+  const yamlOverallProgress = yamlPartTotal > 0 && yamlFileIndex >= 0 && yamlOperation?.documentNames?.length
+    ? ((yamlFileIndex + yamlPartCurrent / yamlPartTotal) / yamlOperation.documentNames.length) * 100
+    : yamlOperation?.progress ?? 0;
 
   async function loadFiles() {
     setIsLoading(true);
@@ -56,6 +78,34 @@ export function ConversionPanel() {
   }
 
   useEffect(() => { void loadFiles(); }, [workspaceSlug]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    async function pollYamlOperation() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/operations?workspaceSlug=${encodeURIComponent(workspaceSlug)}`);
+        if (!response.ok || cancelled) return;
+        const operations = await response.json() as YamlOperation[];
+        const operation = operations.find((item) => item.kind === "yaml" && item.status === "running")
+          ?? operations.find((item) => item.kind === "yaml" && item.id === yamlOperation?.id);
+        if (!operation || cancelled) return;
+        setYamlOperation(operation);
+        if (operation.status === "running") {
+          timer = window.setTimeout(() => void pollYamlOperation(), 700);
+          return;
+        }
+        await loadFiles();
+        if (!cancelled) {
+          setMessage(operation.status === "completed"
+            ? (isEnglish ? "YAML metadata generation completed." : "YAML metadata oluşturma tamamlandı.")
+            : operation.error ?? (isEnglish ? "YAML metadata generation stopped." : "YAML metadata oluşturma durduruldu."));
+        }
+      } catch { /* Keep the visible operation state until the next poll succeeds. */ }
+    }
+    void pollYamlOperation();
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [workspaceSlug, yamlOperation?.id]);
 
   async function openYamlPrompt() {
     setYamlPromptVisible(true);
@@ -168,39 +218,35 @@ export function ConversionPanel() {
   }
 
   async function generateYaml(file: ConvertedFile) {
-    setYamlGeneratingFile(file.filename);
-    setMessage("");
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/conversions/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(file.filename)}/generate-yaml`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      const body = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(body.error ?? "YAML metadata could not be generated.");
-      await loadFiles();
-      if (selectedConversion?.filename === file.filename) await selectFile({ ...file, hasYaml: true });
-      setMessage(isEnglish ? `${file.filename}: YAML metadata created.` : `${file.filename}: YAML metadata oluşturuldu.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "YAML metadata could not be generated.");
-    } finally {
-      setYamlGeneratingFile(null);
-    }
+    await generateYamlForFiles([file]);
   }
 
   async function generateYamlForFiles(targetFiles: ConvertedFile[]) {
     if (targetFiles.length === 0) return;
     setMessage("");
     try {
-      for (const [index, file] of targetFiles.entries()) {
-        setYamlGeneratingFile(file.filename);
-        setMessage(isEnglish ? `Generating YAML ${index + 1}/${targetFiles.length}: ${file.filename}` : `YAML oluşturuluyor ${index + 1}/${targetFiles.length}: ${file.filename}`);
-        const response = await fetch(`${apiBaseUrl}/api/conversions/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(file.filename)}/generate-yaml`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-        const body = await response.json() as { error?: string };
-        if (!response.ok) throw new Error(`${file.filename}: ${body.error ?? "YAML metadata could not be generated."}`);
-      }
-      await loadFiles();
-      setMessage(isEnglish ? `YAML metadata created for ${targetFiles.length} file(s).` : `${targetFiles.length} dosya için YAML metadata oluşturuldu.`);
+      const response = await fetch(`${apiBaseUrl}/api/conversions/${encodeURIComponent(workspaceSlug)}/generate-yaml-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filenames: targetFiles.map((file) => file.filename) })
+      });
+      const body = await response.json() as { operationId?: string; error?: string };
+      if (!response.ok || !body.operationId) throw new Error(body.error ?? "YAML metadata generation could not be started.");
+      setYamlOperation({ id: body.operationId, kind: "yaml", targetName: targetFiles.length === 1 ? targetFiles[0]!.filename : `${targetFiles.length} Markdown files`, documentNames: targetFiles.map((file) => file.filename), status: "running", stage: isEnglish ? "Queued for YAML metadata generation" : "YAML metadata üretimi kuyruğa alındı", progress: 0 });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "YAML metadata could not be generated.");
-    } finally {
-      setYamlGeneratingFile(null);
+    }
+  }
+
+  async function cancelYamlGeneration() {
+    if (!yamlOperation || yamlOperation.status !== "running") return;
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/operations/${encodeURIComponent(yamlOperation.id)}`, { method: "DELETE" });
+      const body = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "YAML metadata generation could not be cancelled.");
+      setMessage(isEnglish ? "Stopping YAML metadata generation…" : "YAML metadata oluşturma durduruluyor…");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "YAML metadata generation could not be cancelled.");
     }
   }
 
@@ -226,15 +272,21 @@ export function ConversionPanel() {
           <h3>{isEnglish ? "Converted Markdown" : "Dönüştürülen Markdown"}</h3>
           <p>{isEnglish ? `${files.length} converted file${files.length === 1 ? "" : "s"} stored in the project's converted-markdown folder.` : `Proje içindeki converted-markdown klasöründe ${files.length} dönüştürülmüş dosya saklanır.`}</p>
         </div>
-        <AButton type="button" tone="secondary" onClick={() => void openYamlPrompt()} disabled={yamlGeneratingFile !== null}>{isEnglish ? "YAML prompt" : "YAML promptu"}</AButton>
+        <AButton type="button" tone="secondary" onClick={() => void openYamlPrompt()} disabled={isGeneratingYaml}>{isEnglish ? "YAML prompt" : "YAML promptu"}</AButton>
       </div>
       <div className="conversion-file-tools">
         <strong>{isEnglish ? `${files.length} files` : `${files.length} dosya`}</strong>
         <div className="conversion-yaml-filters" aria-label={isEnglish ? "YAML metadata filters" : "YAML metadata filtreleri"}>
-          {(["all", "with-yaml", "without-yaml"] as YamlFilter[]).map((filter) => <AButton key={filter} type="button" tone="secondary" className={yamlFilter === filter ? "is-active" : undefined} onClick={() => setYamlFilter(filter)} disabled={yamlGeneratingFile !== null}>{filter === "all" ? (isEnglish ? "All" : "Tümü") : filter === "with-yaml" ? (isEnglish ? "YAML added" : "YAML eklendi") : (isEnglish ? "YAML missing" : "YAML yok")}</AButton>)}
+          {(["all", "with-yaml", "without-yaml"] as YamlFilter[]).map((filter) => <AButton key={filter} type="button" tone="secondary" className={yamlFilter === filter ? "is-active" : undefined} onClick={() => setYamlFilter(filter)} disabled={isGeneratingYaml}>{filter === "all" ? (isEnglish ? "All" : "Tümü") : filter === "with-yaml" ? (isEnglish ? "YAML added" : "YAML eklendi") : (isEnglish ? "YAML missing" : "YAML yok")}</AButton>)}
         </div>
-        {yamlMissingFiles.length ? <AButton type="button" tone="secondary" onClick={() => void generateYamlForFiles(yamlMissingFiles)} disabled={yamlGeneratingFile !== null}>{isEnglish ? `Add YAML to all (${yamlMissingFiles.length})` : `Tümüne YAML ekle (${yamlMissingFiles.length})`}</AButton> : null}
+        {yamlMissingFiles.length ? <AButton type="button" tone="secondary" onClick={() => void generateYamlForFiles(yamlMissingFiles)} disabled={isGeneratingYaml}>{isEnglish ? `Add YAML to all (${yamlMissingFiles.length})` : `Tümüne YAML ekle (${yamlMissingFiles.length})`}</AButton> : null}
       </div>
+      {isGeneratingYaml && yamlOperation ? <div className="form-message conversion-yaml-progress" role="status" aria-live="polite">
+        <span><i className="pi pi-spinner pi-spin" aria-hidden="true" /> {yamlOperation.stage}</span>
+        <progress value={yamlFileProgress} max="100" aria-label={isEnglish ? "Current file YAML metadata progress" : "Geçerli dosyanın YAML metadata ilerlemesi"} />
+        <strong>{isEnglish ? `File ${yamlFileProgress}% · Total ${yamlOverallProgress.toFixed(1)}%` : `Dosya %${yamlFileProgress} · Toplam %${yamlOverallProgress.toFixed(1)}`}</strong>
+        <AButton type="button" tone="secondary" onClick={() => void cancelYamlGeneration()}>{isEnglish ? "Stop" : "Durdur"}</AButton>
+      </div> : null}
       {files.length > 0 ? <AInput className="conversion-file-search" value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} placeholder={isEnglish ? "Search files" : "Dosya ara"} aria-label={isEnglish ? "Search project files" : "Proje dosyalarında ara"} /> : null}
       {message ? <p className="form-message" role="status">{message}</p> : null}
       <div className="conversion-file-list">
@@ -250,10 +302,10 @@ export function ConversionPanel() {
           </button>
           <div className="conversion-file-actions">
             <AIcon className={file.hasYaml ? "conversion-yaml-status is-ready" : "conversion-yaml-status is-missing"} icon={<i className={file.hasYaml ? "pi pi-check-circle" : "pi pi-clock"} />} tooltip={file.hasYaml ? (isEnglish ? "YAML metadata added" : "YAML metadata eklendi") : (isEnglish ? "YAML metadata missing" : "YAML metadata yok")} />
-            <AButton tone="secondary" aria-label={isEnglish ? `${file.hasYaml ? "Update" : "Generate"} YAML metadata for ${file.filename}` : `${file.filename} için YAML metadata`} title={file.hasYaml ? (isEnglish ? "Update YAML metadata" : "YAML metadata güncelle") : (isEnglish ? "Generate YAML metadata" : "YAML metadata oluştur")} onClick={() => void generateYaml(file)} disabled={yamlGeneratingFile !== null}>
+            <AButton tone="secondary" aria-label={isEnglish ? `${file.hasYaml ? "Update" : "Generate"} YAML metadata for ${file.filename}` : `${file.filename} için YAML metadata`} title={file.hasYaml ? (isEnglish ? "Update YAML metadata" : "YAML metadata güncelle") : (isEnglish ? "Generate YAML metadata" : "YAML metadata oluştur")} onClick={() => void generateYaml(file)} disabled={isGeneratingYaml}>
               <i className={yamlGeneratingFile === file.filename ? "pi pi-spinner pi-spin" : file.hasYaml ? "pi pi-refresh" : "pi pi-sparkles"} aria-hidden="true" />
             </AButton>
-            <AButton tone="secondary" aria-label={isEnglish ? `Delete ${file.filename}` : `${file.filename} sil`} title={isEnglish ? "Delete" : "Sil"} onClick={() => void remove(file)} disabled={yamlGeneratingFile !== null}><i className="pi pi-trash" aria-hidden="true" /></AButton>
+            <AButton tone="secondary" aria-label={isEnglish ? `Delete ${file.filename}` : `${file.filename} sil`} title={isEnglish ? "Delete" : "Sil"} onClick={() => void remove(file)} disabled={isGeneratingYaml}><i className="pi pi-trash" aria-hidden="true" /></AButton>
           </div>
         </div>)}
       </div>

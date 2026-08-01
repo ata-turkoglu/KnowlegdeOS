@@ -13,13 +13,14 @@ const languageOptions = [
 const apiBaseUrl = "http://127.0.0.1:4000";
 const providerOptions = [{ label: "Ollama", value: "ollama" }, { label: "OpenAI", value: "openai" }, { label: "Google Gemini", value: "gemini" }, { label: "Anthropic Claude", value: "anthropic" }];
 const embeddingProviderOptions = providerOptions.filter((provider) => provider.value !== "anthropic");
-const defaultIngestionValues = { chunkSize: "450", chunkOverlap: "60", similarityThreshold: "0.25", dateMinYear: "1800", dateMaxYear: String(new Date().getFullYear()) };
+const defaultIngestionValues = { chunkSize: "450", chunkOverlap: "60", similarityThreshold: "0.25" };
 type LlmTemperatures = { extraction: number; answer: number; summary: number; creative: number };
 type ModelCapabilities = { provider: string; model: string; inputTokenLimit: number | null; outputTokenLimit: number | null; runtimeContextLimit?: number | null; supportsTokenCounting: boolean; source: string; discoveredAt: string; warning?: string };
 type SmallModelMetrics = Record<"queryNormalizer" | "queryAnalyzer" | "ocrCorrector" | "conversationSummary" | "evidencePreparer" | "contradictionDetector" | "entityLinker" | "reranker" | "fieldMatcher", { attempts: number; successes: number; fallbacks: number; accepted: number }>;
 type HardwareProfile = { cpu: { model: string; logicalCores: number }; memoryTotalGb: number; gpu: { available: boolean; name?: string; memoryTotal?: number; reason?: string } };
 type SmallModelRole = "metadata" | "queryNormalizer" | "queryAnalyzer" | "ocrCorrector" | "conversationSummary" | "evidencePreparer" | "contradictionDetector" | "entityLinker" | "reranker";
 const primaryModelRecommendations = { openai: "gpt-5.4-mini", anthropic: "claude-sonnet-4-20250514" } as const;
+const apiRerankerRecommendation = "gpt-5-mini";
 const smallModelRecommendations: Record<SmallModelRole, { openai: string; anthropic: string }> = {
   metadata: { openai: "gpt-5-mini", anthropic: "claude-sonnet-4-20250514" },
   queryNormalizer: { openai: "gpt-5.4-nano", anthropic: "claude-3-5-haiku-20241022" },
@@ -71,6 +72,8 @@ export function SettingsPanel() {
   const [embeddingProvider, setEmbeddingProvider] = useState("ollama");
   const [entityLinkerModel, setEntityLinkerModel] = useState("");
   const [rerankerModel, setRerankerModel] = useState("");
+  const [apiRerankerProvider, setApiRerankerProvider] = useState<"none" | "openai" | "gemini" | "anthropic">("none");
+  const [apiRerankerModel, setApiRerankerModel] = useState("");
   const [queryNormalizerModel, setQueryNormalizerModel] = useState("");
   const [queryAnalyzerModel, setQueryAnalyzerModel] = useState("");
   const [ocrCorrectorModel, setOcrCorrectorModel] = useState("");
@@ -88,8 +91,6 @@ export function SettingsPanel() {
   const [chunkSize, setChunkSize] = useState("450");
   const [chunkOverlap, setChunkOverlap] = useState("60");
   const [similarityThreshold, setSimilarityThreshold] = useState("0.25");
-  const [dateMinYear, setDateMinYear] = useState(defaultIngestionValues.dateMinYear);
-  const [dateMaxYear, setDateMaxYear] = useState(defaultIngestionValues.dateMaxYear);
   const [staleDocumentCount, setStaleDocumentCount] = useState(0);
   const [reindexing, setReindexing] = useState(false);
   const [reindexOperationId, setReindexOperationId] = useState<string | null>(null);
@@ -120,7 +121,7 @@ export function SettingsPanel() {
     fetch(`${apiBaseUrl}/api/settings/models`)
       .then(async (response) => {
         if (!response.ok) throw new Error("Model list could not be loaded.");
-        return response.json() as Promise<{ llmModel: string; metadataLlmModel: string; embeddingModel: string; queryNormalizerModel: string; queryAnalyzerModel: string; ocrCorrectorModel: string; conversationSummaryModel: string; evidencePreparerModel: string; contradictionDetectorModel: string; entityLinkerModel: string; rerankerModel: string; fieldMatcherModel: string; hybridApiProvider?: string; hybridApiModel?: string; smallModelMetrics?: SmallModelMetrics; llmProvider?: string; embeddingProvider?: string; llmTemperatures?: Partial<LlmTemperatures>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number; capabilities?: ModelCapabilities; hardwareProfile?: HardwareProfile; models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[] }; catalog: Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }> }>;
+        return response.json() as Promise<{ llmModel: string; metadataLlmModel: string; embeddingModel: string; queryNormalizerModel: string; queryAnalyzerModel: string; ocrCorrectorModel: string; conversationSummaryModel: string; evidencePreparerModel: string; contradictionDetectorModel: string; entityLinkerModel: string; rerankerModel: string; fieldMatcherModel: string; apiRerankerProvider?: string; apiRerankerModel?: string; smallModelMetrics?: SmallModelMetrics; llmProvider?: string; embeddingProvider?: string; llmTemperatures?: Partial<LlmTemperatures>; ragSoftInputTokens?: number; ragReservedOutputTokens?: number; capabilities?: ModelCapabilities; hardwareProfile?: HardwareProfile; models: string[]; openai: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; gemini: { configured: boolean; llmModels: string[]; embeddingModels: string[] }; anthropic: { configured: boolean; llmModels: string[] }; catalog: Array<{ name: string; kind: "llm" | "embedding"; description: string; capabilities: string[]; sizes: string[]; pulls?: string; tags?: string; updated?: string }> }>;
       })
       .then((settings) => {
         setLlmModel(settings.llmModel);
@@ -128,6 +129,8 @@ export function SettingsPanel() {
         setEmbeddingModel(settings.embeddingModel);
         setEntityLinkerModel(settings.entityLinkerModel);
         setRerankerModel(settings.rerankerModel);
+        setApiRerankerProvider((settings.apiRerankerProvider === "openai" || settings.apiRerankerProvider === "gemini" || settings.apiRerankerProvider === "anthropic") ? settings.apiRerankerProvider : "none");
+        setApiRerankerModel(settings.apiRerankerModel ?? "");
         setQueryNormalizerModel(settings.queryNormalizerModel);
         setQueryAnalyzerModel(settings.queryAnalyzerModel);
         setOcrCorrectorModel(settings.ocrCorrectorModel);
@@ -151,8 +154,8 @@ export function SettingsPanel() {
           creative: settings.llmTemperatures?.creative ?? defaultLlmTemperatures.creative
         });
         setCloudModels({ openai: settings.openai, gemini: settings.gemini, anthropic: { ...settings.anthropic, embeddingModels: [] } });
-        const savedSmallApiModel = [settings.metadataLlmModel, settings.queryNormalizerModel, settings.queryAnalyzerModel, settings.ocrCorrectorModel, settings.conversationSummaryModel, settings.evidencePreparerModel, settings.contradictionDetectorModel, settings.entityLinkerModel, settings.rerankerModel].find((model) => /^(openai|anthropic)\//.test(model));
-        setSmallApiProvider(savedSmallApiModel?.startsWith("anthropic/") || (!savedSmallApiModel && settings.llmProvider === "anthropic") ? "anthropic" : "openai");
+        const savedSmallApiModel = [settings.metadataLlmModel, settings.queryNormalizerModel, settings.queryAnalyzerModel, settings.ocrCorrectorModel, settings.conversationSummaryModel, settings.evidencePreparerModel, settings.contradictionDetectorModel, settings.entityLinkerModel].find((model) => /^(openai|anthropic)\//.test(model));
+        setSmallApiProvider(settings.apiRerankerProvider === "anthropic" || savedSmallApiModel?.startsWith("anthropic/") || (!savedSmallApiModel && settings.llmProvider === "anthropic") ? "anthropic" : "openai");
       })
       .catch(() => setMessage(language === "tr" ? "Ollama modelleri yüklenemedi." : "Ollama models could not be loaded."))
       .finally(() => setLoading(false));
@@ -163,14 +166,12 @@ export function SettingsPanel() {
     fetch(`${apiBaseUrl}/api/settings/ingestion/${encodeURIComponent(workspaceSlug)}`)
       .then(async (response) => {
         if (!response.ok) throw new Error("Ingestion settings could not be loaded.");
-        return response.json() as Promise<{ settings: { chunkSize: number; chunkOverlap: number; similarityThreshold: number; dateMinYear: number; dateMaxYear: number }; reindex: { staleDocumentCount: number } }>;
+        return response.json() as Promise<{ settings: { chunkSize: number; chunkOverlap: number; similarityThreshold: number }; reindex: { staleDocumentCount: number } }>;
       })
       .then(({ settings, reindex }) => {
         setChunkSize(String(settings.chunkSize));
         setChunkOverlap(String(settings.chunkOverlap));
         setSimilarityThreshold(String(settings.similarityThreshold));
-        setDateMinYear(String(settings.dateMinYear));
-        setDateMaxYear(String(settings.dateMaxYear));
         setStaleDocumentCount(reindex.staleDocumentCount);
       })
       .catch(() => setMessage(language === "tr" ? "İndeksleme ayarları yüklenemedi." : "Ingestion settings could not be loaded."))
@@ -189,33 +190,29 @@ export function SettingsPanel() {
       const nextChunkSize = Number(chunkSize);
       const nextChunkOverlap = Number(chunkOverlap);
       const nextThreshold = Number(similarityThreshold);
-      const nextDateMinYear = Number(dateMinYear);
-      const nextDateMaxYear = Number(dateMaxYear);
-      if (!Number.isInteger(nextChunkSize) || nextChunkSize < 100 || nextChunkSize > 2_000 || !Number.isInteger(nextChunkOverlap) || nextChunkOverlap < 0 || nextChunkOverlap >= nextChunkSize || !Number.isFinite(nextThreshold) || nextThreshold < 0 || nextThreshold > 1 || !Number.isInteger(nextDateMinYear) || !Number.isInteger(nextDateMaxYear) || nextDateMinYear < 1 || nextDateMaxYear < nextDateMinYear || nextDateMaxYear > new Date().getFullYear()) {
+      if (!Number.isInteger(nextChunkSize) || nextChunkSize < 100 || nextChunkSize > 2_000 || !Number.isInteger(nextChunkOverlap) || nextChunkOverlap < 0 || nextChunkOverlap >= nextChunkSize || !Number.isFinite(nextThreshold) || nextThreshold < 0 || nextThreshold > 1) {
         setMessage(language === "tr" ? "İndeksleme alanlarını geçerli aralıklarda doldurun." : "Enter ingestion values within the allowed ranges.");
         return;
       }
       const ingestionResponse = await fetch(`${apiBaseUrl}/api/settings/ingestion/${encodeURIComponent(workspaceSlug)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chunkSize: nextChunkSize, chunkOverlap: nextChunkOverlap, similarityThreshold: nextThreshold, dateMinYear: nextDateMinYear, dateMaxYear: nextDateMaxYear })
+        body: JSON.stringify({ chunkSize: nextChunkSize, chunkOverlap: nextChunkOverlap, similarityThreshold: nextThreshold })
       });
       if (!ingestionResponse.ok) {
         setMessage(language === "tr" ? "İndeksleme ayarları kaydedilemedi." : "Ingestion settings could not be saved.");
         return;
       }
-      const ingestionResult = await ingestionResponse.json() as { settings: { chunkSize: number; chunkOverlap: number; similarityThreshold: number; dateMinYear: number; dateMaxYear: number }; reindex: { staleDocumentCount: number } };
+      const ingestionResult = await ingestionResponse.json() as { settings: { chunkSize: number; chunkOverlap: number; similarityThreshold: number }; reindex: { staleDocumentCount: number } };
       setChunkSize(String(ingestionResult.settings.chunkSize));
       setChunkOverlap(String(ingestionResult.settings.chunkOverlap));
       setSimilarityThreshold(String(ingestionResult.settings.similarityThreshold));
-      setDateMinYear(String(ingestionResult.settings.dateMinYear));
-      setDateMaxYear(String(ingestionResult.settings.dateMaxYear));
       setStaleDocumentCount(ingestionResult.reindex.staleDocumentCount);
       setMessage(language === "tr" ? "İndeksleme ayarları kaydedildi." : "Ingestion settings saved.");
       return;
     }
 
-    if (!llmModel || !metadataLlmModel || !embeddingModel || !queryNormalizerModel || !queryAnalyzerModel || !ocrCorrectorModel || !conversationSummaryModel || !evidencePreparerModel || !contradictionDetectorModel || !entityLinkerModel || !rerankerModel || !fieldMatcherModel) return;
+    if (!llmModel || !metadataLlmModel || !embeddingModel || !queryNormalizerModel || !queryAnalyzerModel || !ocrCorrectorModel || !conversationSummaryModel || !evidencePreparerModel || !contradictionDetectorModel || !entityLinkerModel || !rerankerModel || !fieldMatcherModel || (apiRerankerProvider !== "none" && !apiRerankerModel)) return;
     const softInputTokens = Number(ragSoftInputTokens);
     const reservedOutputTokens = Number(ragReservedOutputTokens);
     if (!Number.isInteger(softInputTokens) || softInputTokens < 0 || !Number.isInteger(reservedOutputTokens) || reservedOutputTokens < 256) {
@@ -225,7 +222,7 @@ export function SettingsPanel() {
     const response = await fetch(`${apiBaseUrl}/api/settings/models`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ llmModel, metadataLlmModel, embeddingModel, queryNormalizerModel, queryAnalyzerModel, ocrCorrectorModel, conversationSummaryModel, evidencePreparerModel, contradictionDetectorModel, entityLinkerModel, rerankerModel, fieldMatcherModel, llmProvider, embeddingProvider, ragSoftInputTokens: softInputTokens, ragReservedOutputTokens: reservedOutputTokens, llmTemperatures: Object.fromEntries(Object.entries(llmTemperatures).map(([profile, temperature]) => [profile, Number(temperature)])) })
+      body: JSON.stringify({ llmModel, metadataLlmModel, embeddingModel, queryNormalizerModel, queryAnalyzerModel, ocrCorrectorModel, conversationSummaryModel, evidencePreparerModel, contradictionDetectorModel, entityLinkerModel, rerankerModel, fieldMatcherModel, apiRerankerProvider, apiRerankerModel, llmProvider, embeddingProvider, ragSoftInputTokens: softInputTokens, ragReservedOutputTokens: reservedOutputTokens, llmTemperatures: Object.fromEntries(Object.entries(llmTemperatures).map(([profile, temperature]) => [profile, Number(temperature)])) })
     });
     if (!response.ok) {
       setMessage(language === "tr" ? "Model ayarları kaydedilemedi." : "Model settings could not be saved.");
@@ -257,8 +254,6 @@ export function SettingsPanel() {
     setChunkSize(defaultIngestionValues.chunkSize);
     setChunkOverlap(defaultIngestionValues.chunkOverlap);
     setSimilarityThreshold(defaultIngestionValues.similarityThreshold);
-    setDateMinYear(defaultIngestionValues.dateMinYear);
-    setDateMaxYear(defaultIngestionValues.dateMaxYear);
     setMessage(language === "tr" ? "Varsayılan değerler forma uygulandı. Kaydet ile onaylayın." : "Default values were applied to the form. Save to confirm.");
   }
 
@@ -423,6 +418,8 @@ export function SettingsPanel() {
   function selectSmallApiProvider(provider: string) {
     const next = provider === "anthropic" ? "anthropic" : "openai";
     setSmallApiProvider(next);
+    setApiRerankerProvider(next);
+    setApiRerankerModel(cloudModels[next].llmModels.includes(apiRerankerRecommendation) ? apiRerankerRecommendation : cloudModels[next].llmModels[0] ?? "");
     if (next === "anthropic" && fieldMatcherModel.startsWith("openai/")) setFieldMatcherModel(installedEmbeddingOptions[0]?.value ?? "");
     const replaceApiModel = (value: string, role: SmallModelRole) => isApiSmallModel(value) ? `${next}/${smallModelRecommendations[role][next]}` : value;
     setMetadataLlmModel((value) => replaceApiModel(value, "metadata"));
@@ -479,6 +476,7 @@ export function SettingsPanel() {
       ? `Yerel: Ollama modeliniz. API F/P önerisi: OpenAI ${recommendation.openai}; Claude ${recommendation.anthropic}. OpenAI nano yüksek hacimli yapılandırılmış işlerde, Claude Haiku kısa çıkarım ve sınıflandırmada uygundur.`
       : `Local: your Ollama model. API value recommendation: OpenAI ${recommendation.openai}; Claude ${recommendation.anthropic}. OpenAI nano suits high-volume structured work; Claude Haiku suits short extraction and classification.`;
   };
+  const apiRerankerOptions = apiRerankerProvider === "none" ? [] : [...new Set([...(apiRerankerProvider === "openai" ? [apiRerankerRecommendation] : []), ...cloudModels[apiRerankerProvider].llmModels])].map((model) => ({ label: `${apiRerankerProvider === "anthropic" ? "Claude" : apiRerankerProvider === "gemini" ? "Gemini" : "OpenAI"} / ${model}`, value: model }));
   const apiModelValueNote = (role: SmallModelRole) => {
     const recommendation = smallModelRecommendations[role];
     return language === "tr"
@@ -498,6 +496,17 @@ export function SettingsPanel() {
     </details>;
   }
   function renderSmallModelField(role: SmallModelRole, label: string, value: string, setValue: (next: string) => void, description: string, advanced?: ReactNode) {
+    if (role === "reranker") return <>
+      <div className="small-model-field">
+        <span className="label-with-info">{language === "tr" ? "Yerel reranker modeli" : "Local reranker model"}<AInfo description={language === "tr" ? "Açık retrieval sinyalinde çalışan bu yol zorunlu olarak Ollama kullanır." : "This lane handles clear retrieval signals and always uses Ollama."} position="right" /></span>
+        <ADropdown value={value} options={installedLlmOptions} disabled={loading} onChange={(event) => setValue(String(event.value))} />
+      </div>
+      <div className="small-model-field">
+        <span className="label-with-info">{language === "tr" ? "API reranker modeli" : "API reranker model"}<AInfo description={language === "tr" ? "Belirsiz adaylarda çalışan bu yol zorunlu olarak seçili API sağlayıcısını kullanır." : "This lane handles ambiguous candidates and always uses the selected API provider."} position="right" /></span>
+        {apiRerankerProvider !== "none" ? <ADropdown value={apiRerankerModel} options={apiRerankerOptions} disabled={loading || !cloudModels[apiRerankerProvider].configured} onChange={(event) => setApiRerankerModel(String(event.value))} /> : <p className="settings-note">{language === "tr" ? "Bu yol için önce API sağlayıcısı ve anahtarı eklenmelidir." : "Add an API provider and key to enable this lane."}</p>}
+      </div>
+      {advanced}
+    </>;
     const apiSelected = isApiSmallModel(value);
     const localValue = apiSelected ? (installedLlmOptions[0]?.value ?? "") : value;
     const apiValue = apiSelected ? value : smallApiOptions(role).find((option) => !option.disabled)?.value ?? smallApiOptions(role)[0].value;
@@ -588,14 +597,6 @@ export function SettingsPanel() {
           <label>
             {language === "tr" ? "Benzerlik eşiği (0–1)" : "Similarity threshold (0–1)"}
             <AInput type="number" min="0" max="1" step="0.05" value={similarityThreshold} onChange={(event) => setSimilarityThreshold(event.target.value)} />
-          </label>
-          <label>
-            {language === "tr" ? "Kabul edilen en eski yıl" : "Earliest accepted year"}
-            <AInput type="number" min="1" max={new Date().getFullYear()} value={dateMinYear} onChange={(event) => setDateMinYear(event.target.value)} />
-          </label>
-          <label>
-            {language === "tr" ? "Kabul edilen en yeni yıl" : "Latest accepted year"}
-            <AInput type="number" min="1" max={new Date().getFullYear()} value={dateMaxYear} onChange={(event) => setDateMaxYear(event.target.value)} />
           </label>
           </div>
           <aside className="settings-ingestion-aside">
