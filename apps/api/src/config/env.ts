@@ -47,6 +47,7 @@ export type ApiConfig = {
   metadataLlmModel: string;
   metadataDiagnosticsEnabled: boolean;
   indexingDiagnosticsEnabled: boolean;
+  indexingDiagnosticsRetentionDays: number;
   geminiApiKey: string;
   geminiLlmModel: string;
   geminiEmbeddingModel: string;
@@ -113,6 +114,7 @@ export function loadConfig(): ApiConfig {
     metadataLlmModel: process.env.METADATA_LLM_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
     metadataDiagnosticsEnabled: enabled(process.env.METADATA_DIAGNOSTICS_ENABLED, false),
     indexingDiagnosticsEnabled: enabled(process.env.INDEXING_DIAGNOSTICS_ENABLED, false),
+    indexingDiagnosticsRetentionDays: Math.max(1, Number(process.env.INDEXING_DIAGNOSTICS_RETENTION_DAYS ?? 7)),
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     geminiLlmModel: process.env.GEMINI_LLM_MODEL ?? "gemini-2.5-flash",
     geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2",

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { readFile, readdir, unlink } from "node:fs/promises";
+import { readFile, readdir, stat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 import type { SavedMultipartFile } from "@fastify/multipart";
@@ -37,8 +37,16 @@ async function writeIndexingDiagnostics(config: ApiConfig, workspaceSlug: string
   const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
   // Parsed outputs are bounded and retained separately from YAML. Provider adapters
   // do not expose raw transport payloads, so this never stores credentials or headers.
-  const serialized = JSON.stringify({ traceId, schemaVersion: 1, ...payload }, null, 2);
+  const serialized = JSON.stringify({ traceId, schemaVersion: 1, ...payload }, null, 2)
+    .replace(/\b(sk|AIza)[A-Za-z0-9_-]{16,}\b/g, '[REDACTED]');
   await writeFileAtomically(path.join(paths.metadata, `indexing-trace-${traceId}.json`), `${serialized.slice(0, 256_000)}\n`);
+  const expiresBefore = Date.now() - config.indexingDiagnosticsRetentionDays * 24 * 60 * 60 * 1000;
+  for (const entry of await readdir(paths.metadata, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile() || !/^indexing-trace-[a-f0-9-]+\.json$/i.test(entry.name)) continue;
+    const target = path.join(paths.metadata, entry.name);
+    const file = await stat(target).catch(() => null);
+    if (file && file.mtimeMs < expiresBefore) await unlink(target).catch(() => undefined);
+  }
 }
 async function ensureWorkspace(db: any, config: ApiConfig, slug: string) { const [found] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (found) return found; const paths = await ensureWorkspaceStorage(config.storageRoot, slug); const [created] = await db.insert(workspaces).values({ name: slug, slug, storagePath: paths.root }).onConflictDoNothing().returning(); if (created) return created; const [raced] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (!raced) throw new Error("Unable to create workspace."); return raced; }
 function uploaded(row: typeof documents.$inferSelect, slug: string): UploadedDocument { return { workspaceSlug: slug, documentName: nameOf(row.filename), filename: row.filename, title: row.title, hash: row.hash, markdownPath: row.markdownPath, sourceOriginalPath: row.sourceOriginalPath, metadataPath: "", status: "UPLOADED" }; }
