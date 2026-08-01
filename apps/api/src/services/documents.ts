@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { readFile, readdir, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -23,7 +23,7 @@ import { correctOcrChunks } from "./ocr-correction.js";
 
 const markdownExtensions = new Set([".md", ".txt"]); const originalExtensions = new Set([".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"]);
 export type UploadedDocument = { workspaceSlug: string; documentName: string; filename: string; title: string; hash: string; markdownPath: string; sourceOriginalPath: string | null; metadataPath: string; status: "UPLOADED" };
-export type IndexedDocumentMetadata = Omit<UploadedDocument, "status"> & { status: "INDEXED"; indexedAt: string; ingestion: IngestionResult; quality: IngestionQualityReport; ingestionSettings?: WorkspaceIngestionSettings; llmExtraction?: LLMExtractionResult; llmExtractionError?: string; indexingPlan?: IndexingPlan; stageResults?: ReturnType<typeof initialIndexingStageResults>; summary?: string; indexCleared?: boolean };
+export type IndexedDocumentMetadata = Omit<UploadedDocument, "status"> & { status: "INDEXED"; indexedAt: string; ingestion: IngestionResult; quality: IngestionQualityReport; ingestionSettings?: WorkspaceIngestionSettings; llmExtraction?: LLMExtractionResult; llmExtractionError?: string; indexingPlan?: IndexingPlan; stageResults?: ReturnType<typeof initialIndexingStageResults>; traceId?: string; summary?: string; indexCleared?: boolean };
 export type DocumentListItem = { documentName: string; workspaceSlug: string; filename: string; title: string; status: "UPLOADED" | "INDEXED"; indexedAt: string | null; markdownPath: string; sourceOriginalPath: string | null; chunkCount: number; entityCount: number; hasLlmExtraction: boolean; llmExtractionError: string | null };
 export type DocumentDetail = DocumentListItem & { hash: string; summary: string | null; markdown: string; quality: IngestionQualityReport; chunks: Array<{ chunkIndex: number; heading: string; tokenCount: number; content: string }>; entities: Array<{ type: string; value: string; confidence: number; source: string; evidenceSnippet: string }> };
 export type UploadConflict = { filename: string; documentName: string; status: "NEW" | "DUPLICATE" | "CONFLICT" };
@@ -32,6 +32,14 @@ const safeOriginalFileName = (markdownFilename: string, originalFilename: string
 const nameOf = (filename: string) => slugify(path.parse(filename).name);
 const chunkContentHash = (content: string) => createHash("sha256").update(content).digest("hex");
 async function withDb<T>(config: ApiConfig, fn: (client: ReturnType<typeof createDatabaseClient>) => Promise<T>) { const client = createDatabaseClient(config.databaseUrl); try { return await fn(client); } finally { await client.close(); } }
+async function writeIndexingDiagnostics(config: ApiConfig, workspaceSlug: string, traceId: string | undefined, payload: Record<string, unknown>) {
+  if (!config.indexingDiagnosticsEnabled || !traceId) return;
+  const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlug);
+  // Parsed outputs are bounded and retained separately from YAML. Provider adapters
+  // do not expose raw transport payloads, so this never stores credentials or headers.
+  const serialized = JSON.stringify({ traceId, schemaVersion: 1, ...payload }, null, 2);
+  await writeFileAtomically(path.join(paths.metadata, `indexing-trace-${traceId}.json`), `${serialized.slice(0, 256_000)}\n`);
+}
 async function ensureWorkspace(db: any, config: ApiConfig, slug: string) { const [found] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (found) return found; const paths = await ensureWorkspaceStorage(config.storageRoot, slug); const [created] = await db.insert(workspaces).values({ name: slug, slug, storagePath: paths.root }).onConflictDoNothing().returning(); if (created) return created; const [raced] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (!raced) throw new Error("Unable to create workspace."); return raced; }
 function uploaded(row: typeof documents.$inferSelect, slug: string): UploadedDocument { return { workspaceSlug: slug, documentName: nameOf(row.filename), filename: row.filename, title: row.title, hash: row.hash, markdownPath: row.markdownPath, sourceOriginalPath: row.sourceOriginalPath, metadataPath: "", status: "UPLOADED" }; }
 function listItem(row: typeof documents.$inferSelect, slug: string, chunks = 0, entityCount = 0): DocumentListItem { return { ...uploaded(row, slug), status: row.status === "INDEXED" ? "INDEXED" : "UPLOADED", indexedAt: row.indexedAt?.toISOString() ?? null, chunkCount: chunks, entityCount, hasLlmExtraction: Boolean(row.llmExtraction), llmExtractionError: row.llmExtractionError }; }
@@ -174,6 +182,7 @@ export async function reindexStoredDocument(
 ): Promise<IndexedDocumentMetadata> {
   const slug = slugify(input.workspaceSlug);
   const wanted = slugify(input.documentName);
+  const traceId = config.indexingDiagnosticsEnabled ? randomUUID() : undefined;
   const result = await withDb(config, async ({ db }) => {
     const ws = await ensureWorkspace(db, config, slug);
     const candidates = await db.select().from(documents).where(eq(documents.workspaceId, ws.id));
@@ -283,19 +292,19 @@ export async function reindexStoredDocument(
         generated.aliases = (result.aliases ?? []).flatMap((group) => (group.aliases ?? []).length ? [{ canonical: group.canonical ?? '', aliases: group.aliases ?? [] }] : []);
         const persisted = await replaceDocumentEntities(config, slug, document.id, deterministicEntities, aliases);
         const warnings = persisted.inputCandidateCount > 0 && persisted.acceptedCount === 0 ? ['All alias candidates were rejected.'] : undefined;
-        stageResults.aliases = { ...stageResults.aliases, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, warnings };
+        stageResults.aliases = { ...stageResults.aliases, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, rejectionSamples: persisted.rejectionSamples, warnings };
       });
       await executeGraphStage<{ relationships?: LLMRelationship[] }>('relationships', buildRelationshipExtractionPrompt(ingestion.content, entityNames), async (result) => {
         generated.relationships = result.relationships ?? [];
         const persisted = await replaceDocumentRelationships(config, slug, document.id, generated.relationships);
         const warnings = persisted.inputCandidateCount > 0 && persisted.acceptedCount === 0 ? ['All relationship candidates were rejected; existing graph rows were preserved.'] : undefined;
-        stageResults.relationships = { ...stageResults.relationships, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, warnings };
+        stageResults.relationships = { ...stageResults.relationships, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, rejectionSamples: persisted.rejectionSamples, warnings };
       });
       await executeGraphStage<{ claims?: LLMClaim[] }>('claims', buildClaimExtractionPrompt(ingestion.content), async (result) => {
         generated.claims = result.claims ?? [];
         const persisted = await replaceDocumentClaims(config, slug, document.id, generated.claims);
         const warnings = persisted.inputCandidateCount > 0 && persisted.acceptedCount === 0 ? ['All claim candidates were rejected; existing graph rows were preserved.'] : undefined;
-        stageResults.claims = { ...stageResults.claims, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, warnings };
+        stageResults.claims = { ...stageResults.claims, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, rejectionSamples: persisted.rejectionSamples, warnings };
       });
       await executeGraphStage<{ summary?: string }>('summary', buildSummaryExtractionPrompt(ingestion.content), (result) => {
         generated.summary = result.summary?.trim() ?? '';
@@ -306,6 +315,16 @@ export async function reindexStoredDocument(
     await db.update(documents).set({ llmExtraction: llmExtraction ?? null, llmExtractionError: llmExtractionError ?? null, summary: llmExtraction?.summary || scalar(ingestion.frontmatter, "summary") }).where(eq(documents.id, document.id));
     return { document, ingestion, quality, settings, llmExtraction, llmExtractionError, plan, stageResults };
   });
+  await writeIndexingDiagnostics(config, slug, traceId, {
+    documentId: result.document.id,
+    documentName: wanted,
+    indexingPlan: result.plan,
+    stageResults: result.stageResults,
+    parsedOutputs: result.llmExtraction,
+    errors: result.llmExtractionError ? result.llmExtractionError.split('; ') : [],
+    rawProviderResponseStored: false,
+    rawProviderResponseReason: 'Provider adapters expose parsed JSON only; raw transport payloads are intentionally not retained.'
+  }).catch(() => undefined);
   ragRetrievalCache.invalidateWorkspace(slug);
   return {
     ...uploaded(result.document, slug),
@@ -317,6 +336,7 @@ export async function reindexStoredDocument(
     llmExtractionError: result.llmExtractionError,
     indexingPlan: result.plan,
     stageResults: result.stageResults,
+    traceId,
     ingestionSettings: result.settings,
     summary: scalar(result.ingestion.frontmatter, "summary") ?? undefined
   };

@@ -33,6 +33,7 @@ export type IndexingStageResult = {
   acceptedCount?: number;
   rejectedCount?: number;
   rejectionCounts?: Record<string, number>;
+  rejectionSamples?: Array<{ reason: string; candidate: Record<string, string> }>;
   warnings?: string[];
   error?: string;
 };

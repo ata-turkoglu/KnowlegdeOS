@@ -687,7 +687,7 @@ export function UploadPanel() {
         </div>
       </div>
 
-      {false && (uploadedDocuments.length > 0 || isIndexing) ? (
+      {(uploadedDocuments.length > 0 || isIndexing) ? (
           <div className="upload-index-panel">
             <div>
               <strong>{isIndexing && uploadedDocuments.length === 0 ? (isEnglish ? "Background indexing" : "Arka plan indeksleme işlemi") : `${uploadedDocuments.length} ${isEnglish ? "document(s)" : "belge"}`}</strong>
@@ -701,13 +701,6 @@ export function UploadPanel() {
                 disabled={isIndexing || isUploading}
               >
                 {isIndexing ? (isEnglish ? "Indexing..." : "İndeksleniyor...") : isEnglish ? "Index" : "İndeksle"}
-              </AButton>
-              <AButton
-                type="button"
-                onClick={() => indexUploadedDocuments()}
-                disabled={isIndexing || isUploading}
-              >
-                {isEnglish ? "Index with LLM" : "LLM ile indeksle"}
               </AButton>
             </div>
             {isIndexing ? <span className="upload-index-progress">{isEnglish ? `Indexing ${indexingProgress.completed} of ${indexingProgress.total}` : `${indexingProgress.total} belgeden ${indexingProgress.completed} tanesi indekslendi`}</span> : null}

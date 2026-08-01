@@ -47,6 +47,7 @@ export type CandidatePersistenceResult = {
   acceptedCount: number;
   rejectedCount: number;
   rejectionCounts: Record<string, number>;
+  rejectionSamples: Array<{ reason: string; candidate: Record<string, string> }>;
 };
 export type EntityDocumentLink = {
   documentId?: string;
@@ -206,8 +207,12 @@ export async function replaceDocumentEntities(
   const persistence = await withDb(config, async ({ db }) =>
     db.transaction(async (tx) => {
       const rejectionCounts: Record<string, number> = {};
+      const rejectionSamples: Array<{ reason: string; candidate: Record<string, string> }> = [];
       let acceptedAliases = 0;
-      const rejectAlias = (reason: string) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; };
+      const rejectAlias = (reason: string, candidate: Record<string, string>) => {
+        rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1;
+        if (rejectionSamples.length < 10) rejectionSamples.push({ reason, candidate });
+      };
       const ws = await workspace(tx, slugify(workspaceSlug));
       const resolved = resolveDocumentEntityAliases(extracted, declaredAliases);
       const fields = await tx
@@ -328,8 +333,8 @@ export async function replaceDocumentEntities(
       }
       for (const item of resolved.aliases) {
         const entity = byPersonValue.get(normalizeForSearch(item.canonical));
-        if (!entity) { rejectAlias('canonical_not_persisted'); continue; }
-        if (normalizeForSearch(item.canonical) === normalizeForSearch(item.alias)) { rejectAlias('same_normalized_value'); continue; }
+        if (!entity) { rejectAlias('canonical_not_persisted', { canonical: item.canonical, alias: item.alias }); continue; }
+        if (normalizeForSearch(item.canonical) === normalizeForSearch(item.alias)) { rejectAlias('same_normalized_value', { canonical: item.canonical, alias: item.alias }); continue; }
         await tx
           .insert(entityAliases)
           .values({
@@ -351,7 +356,7 @@ export async function replaceDocumentEntities(
           sql`not exists (select 1 from ${documentEntities} de where de.entity_id = ${entities.id})`,
         ),
       );
-      return { inputCandidateCount: resolved.aliases.length, acceptedCount: acceptedAliases, rejectedCount: resolved.aliases.length - acceptedAliases, rejectionCounts } satisfies CandidatePersistenceResult;
+      return { inputCandidateCount: resolved.aliases.length, acceptedCount: acceptedAliases, rejectedCount: resolved.aliases.length - acceptedAliases, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
     }),
   );
   await augmentChunkEntityLinks(config, workspaceSlug, documentId);
@@ -779,15 +784,16 @@ export async function replaceDocumentRelationships(
     db.transaction(async (tx) => {
       const ws = await workspace(tx, slugify(workspaceSlug));
       const rejectionCounts: Record<string, number> = {};
-      const reject = (reason: string) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; };
-      if (!extracted.length) return { inputCandidateCount: 0, acceptedCount: 0, rejectedCount: 0, rejectionCounts } satisfies CandidatePersistenceResult;
+      const rejectionSamples: Array<{ reason: string; candidate: Record<string, string> }> = [];
+      const reject = (reason: string, candidate: Record<string, string>) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; if (rejectionSamples.length < 10) rejectionSamples.push({ reason, candidate }); };
+      if (!extracted.length) return { inputCandidateCount: 0, acceptedCount: 0, rejectedCount: 0, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
 
       const [document] = await tx
         .select({ content: documents.content })
         .from(documents)
         .where(eq(documents.id, documentId))
         .limit(1);
-      if (!document) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts: { document_not_found: extracted.length } } satisfies CandidatePersistenceResult;
+      if (!document) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts: { document_not_found: extracted.length }, rejectionSamples: [] } satisfies CandidatePersistenceResult;
       const indexedEntities = await tx
         .select({ entity: entities })
         .from(documentEntities)
@@ -819,28 +825,29 @@ export async function replaceDocumentRelationships(
         const relation = item.relation.trim();
         const evidenceSnippet = item.evidence.trim();
         const normalizedEvidence = normalizeForSearch(evidenceSnippet);
-        if (!source) { reject('source_entity_not_found'); continue; }
-        if (!target) { reject('target_entity_not_found'); continue; }
-        if (source.id === target.id) { reject('same_entity'); continue; }
-        if (!relation) { reject('blank_predicate'); continue; }
-        if (!normalizedEvidence) { reject('blank_evidence'); continue; }
-        if (!normalizedContent.includes(normalizedEvidence)) { reject('evidence_not_grounded'); continue; }
+        const candidate = { source: item.source, relation: item.relation, target: item.target, evidence: item.evidence };
+        if (!source) { reject('source_entity_not_found', candidate); continue; }
+        if (!target) { reject('target_entity_not_found', candidate); continue; }
+        if (source.id === target.id) { reject('same_entity', candidate); continue; }
+        if (!relation) { reject('blank_predicate', candidate); continue; }
+        if (!normalizedEvidence) { reject('blank_evidence', candidate); continue; }
+        if (!normalizedContent.includes(normalizedEvidence)) { reject('evidence_not_grounded', candidate); continue; }
         if (
           !evidenceMentionsEntity(normalizedEvidence, source, aliases)
         )
-          { reject('source_not_in_evidence'); continue; }
-        if (!evidenceMentionsEntity(normalizedEvidence, target, aliases)) { reject('target_not_in_evidence'); continue; }
+          { reject('source_not_in_evidence', candidate); continue; }
+        if (!evidenceMentionsEntity(normalizedEvidence, target, aliases)) { reject('target_not_in_evidence', candidate); continue; }
         const key = `${source.id}:${relation}:${target.id}`;
-        if (seen.has(key)) { reject('duplicate'); continue; }
+        if (seen.has(key)) { reject('duplicate', candidate); continue; }
         seen.add(key);
         accepted.push({ sourceEntityId: source.id, targetEntityId: target.id, relation, evidenceSnippet });
       }
       // Do not erase a previously usable graph merely because all new
       // candidates failed validation. A trusted explicit clear is separate.
-      if (!accepted.length) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts } satisfies CandidatePersistenceResult;
+      if (!accepted.length) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
       await tx.delete(relationships).where(and(eq(relationships.documentId, documentId), eq(relationships.origin, 'LLM')));
       await tx.insert(relationships).values(accepted.map((item) => ({ workspaceId: ws.id, documentId, ...item, confidence: 0.8, origin: 'LLM' })));
-      return { inputCandidateCount: extracted.length, acceptedCount: accepted.length, rejectedCount: extracted.length - accepted.length, rejectionCounts } satisfies CandidatePersistenceResult;
+      return { inputCandidateCount: extracted.length, acceptedCount: accepted.length, rejectedCount: extracted.length - accepted.length, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
     }),
   );
 }
@@ -853,7 +860,7 @@ export async function replaceDocumentClaims(
   documentId: string,
   extracted: LLMClaim[],
 ) : Promise<CandidatePersistenceResult> {
-  if (!extracted.length) return { inputCandidateCount: 0, acceptedCount: 0, rejectedCount: 0, rejectionCounts: {} };
+  if (!extracted.length) return { inputCandidateCount: 0, acceptedCount: 0, rejectedCount: 0, rejectionCounts: {}, rejectionSamples: [] };
   return withDb(config, async ({ db }) =>
     db.transaction(async (tx) => {
       const ws = await workspace(tx, slugify(workspaceSlug));
@@ -884,21 +891,23 @@ export async function replaceDocumentClaims(
         .where(eq(documentChunks.documentId, documentId));
       const seen = new Set<string>();
       const rejectionCounts: Record<string, number> = {};
-      const reject = (reason: string) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; };
+      const rejectionSamples: Array<{ reason: string; candidate: Record<string, string> }> = [];
+      const reject = (reason: string, candidate: Record<string, string>) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; if (rejectionSamples.length < 10) rejectionSamples.push({ reason, candidate }); };
       const accepted: Array<typeof claims.$inferInsert> = [];
       for (const item of extracted) {
         const subject = item.subject?.trim();
         const predicate = item.predicate?.trim();
         const object = item.object?.trim();
         const evidence = item.evidence?.trim();
-        if (!subject || !predicate || !object || !evidence) { reject('blank_required_field'); continue; }
+        const candidate = { subject: item.subject ?? '', predicate: item.predicate ?? '', object: item.object ?? '', evidence: item.evidence ?? '' };
+        if (!subject || !predicate || !object || !evidence) { reject('blank_required_field', candidate); continue; }
         const normalizedEvidence = normalizeForSearch(evidence);
         const chunk = chunks.find((candidate) =>
           candidate.normalizedContent.includes(normalizedEvidence),
         );
-        if (!chunk) { reject('evidence_not_grounded'); continue; }
+        if (!chunk) { reject('evidence_not_grounded', candidate); continue; }
         const key = `${normalizeForSearch(subject)}:${normalizeForSearch(predicate)}:${normalizeForSearch(object)}:${normalizedEvidence}`;
-        if (seen.has(key)) { reject('duplicate'); continue; }
+        if (seen.has(key)) { reject('duplicate', candidate); continue; }
         seen.add(key);
         accepted.push({
           workspaceId: ws.id,
@@ -922,10 +931,10 @@ export async function replaceDocumentClaims(
           origin: 'LLM',
         });
       }
-      if (!accepted.length) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts } satisfies CandidatePersistenceResult;
+      if (!accepted.length) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
       await tx.delete(claims).where(and(eq(claims.documentId, documentId), eq(claims.origin, 'LLM')));
       await tx.insert(claims).values(accepted);
-      return { inputCandidateCount: extracted.length, acceptedCount: accepted.length, rejectedCount: extracted.length - accepted.length, rejectionCounts } satisfies CandidatePersistenceResult;
+      return { inputCandidateCount: extracted.length, acceptedCount: accepted.length, rejectedCount: extracted.length - accepted.length, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
     }),
   );
 }

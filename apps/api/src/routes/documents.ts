@@ -275,7 +275,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
             invalidateSemanticIndex: false,
             onProgress: (stage) => void updateOperation(config, request.params.workspaceSlug, persisted.id, { stage })
           });
-          await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: indexed.indexingPlan, stageResults: indexed.stageResults });
+          await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: indexed.indexingPlan, stageResults: indexed.stageResults, traceId: indexed.traceId });
           partial ||= Boolean(indexed.llmExtractionError) || Object.values(indexed.stageResults ?? {}).some((stage) => stage.status === 'succeeded_with_warnings');
           operation.completed += 1;
           indexedDocumentNames.push(documentName);
@@ -485,7 +485,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
             void updateOperation(config, request.params.workspaceSlug, persisted.id, { stage, progress: stage === "Completed" ? 100 : 50 });
           }
         });
-        await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: document.indexingPlan, stageResults: document.stageResults });
+        await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: document.indexingPlan, stageResults: document.stageResults, traceId: document.traceId });
 
         updateReindexOperation(resolvedOperationId, {
           stage: controller.signal.aborted ? "Cancelled" : "Completed",

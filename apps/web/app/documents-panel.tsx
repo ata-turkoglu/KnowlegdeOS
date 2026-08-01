@@ -52,6 +52,15 @@ type ReindexOperation = {
   status: "running" | "completed" | "cancelled" | "failed";
 };
 
+type IndexingStageResult = {
+  status: 'pending' | 'running' | 'succeeded' | 'succeeded_with_warnings' | 'failed' | 'skipped';
+  execution: string;
+  provider?: string;
+  model?: string;
+  acceptedCount?: number;
+  rejectedCount?: number;
+};
+
 type DocumentFilter = "all" | "indexed" | "chunks" | "entities" | "llm";
 
 function formatIndexedAt(value: string | null, language: "tr" | "en") {
@@ -144,6 +153,18 @@ function formatReindexStage(stage: string, isEnglish: boolean) {
   };
 
   return stages[stage]?.[isEnglish ? 1 : 0] ?? stage;
+}
+
+function indexingOutcome(stageResults: Record<string, IndexingStageResult> | undefined, isEnglish: boolean) {
+  if (!stageResults) return '';
+  const relevant = ['entities', 'aliases', 'relationships', 'claims', 'summary']
+    .map((stage) => [stage, stageResults[stage]] as const)
+    .filter((entry): entry is [string, IndexingStageResult] => Boolean(entry[1]));
+  const failed = relevant.filter(([, stage]) => stage.status === 'failed').map(([stage]) => stage);
+  const warnings = relevant.filter(([, stage]) => stage.status === 'succeeded_with_warnings').map(([stage]) => stage);
+  if (failed.length) return isEnglish ? ` Failed stages: ${failed.join(', ')}.` : ` Başarısız aşamalar: ${failed.join(', ')}.`;
+  if (warnings.length) return isEnglish ? ` Review needed: ${warnings.join(', ')}.` : ` İnceleme gerekli: ${warnings.join(', ')}.`;
+  return isEnglish ? ` Stages: ${relevant.map(([stage, result]) => `${stage} (${result.execution})`).join(', ')}.` : ` Aşamalar: ${relevant.map(([stage, result]) => `${stage} (${result.execution})`).join(', ')}.`;
 }
 
 const reindexStages = [
@@ -269,7 +290,7 @@ export function DocumentsPanel() {
         return;
       }
 
-      setMessage(isEnglish ? `${documentName} reindexed.` : `${documentName} yeniden indekslendi.`);
+      setMessage((isEnglish ? `${documentName} reindexed.` : `${documentName} yeniden indekslendi.`) + indexingOutcome(body.stageResults, isEnglish));
       await loadDocuments(workspaceSlug);
       await loadDocumentDetail(documentName, workspaceSlug);
     } catch (error) {

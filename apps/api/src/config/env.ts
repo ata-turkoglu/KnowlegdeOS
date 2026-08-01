@@ -46,6 +46,7 @@ export type ApiConfig = {
   openaiEmbeddingModel: string;
   metadataLlmModel: string;
   metadataDiagnosticsEnabled: boolean;
+  indexingDiagnosticsEnabled: boolean;
   geminiApiKey: string;
   geminiLlmModel: string;
   geminiEmbeddingModel: string;
@@ -111,6 +112,7 @@ export function loadConfig(): ApiConfig {
     openaiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
     metadataLlmModel: process.env.METADATA_LLM_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
     metadataDiagnosticsEnabled: enabled(process.env.METADATA_DIAGNOSTICS_ENABLED, false),
+    indexingDiagnosticsEnabled: enabled(process.env.INDEXING_DIAGNOSTICS_ENABLED, false),
     geminiApiKey: process.env.GEMINI_API_KEY ?? "",
     geminiLlmModel: process.env.GEMINI_LLM_MODEL ?? "gemini-2.5-flash",
     geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2",
