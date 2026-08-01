@@ -45,6 +45,10 @@ export type ApiConfig = {
   openaiLlmModel: string;
   openaiEmbeddingModel: string;
   metadataLlmModel: string;
+  indexingAliasModel: string;
+  indexingRelationshipModel: string;
+  indexingClaimModel: string;
+  indexingSummaryModel: string;
   metadataDiagnosticsEnabled: boolean;
   indexingDiagnosticsEnabled: boolean;
   indexingDiagnosticsRetentionDays: number;
@@ -87,6 +91,7 @@ export function loadConfig(): ApiConfig {
       : llmProvider === "anthropic"
         ? process.env.ANTHROPIC_LLM_MODEL ?? "claude-sonnet-4-20250514"
         : process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b";
+  const defaultIndexingModel = llmProvider === 'ollama' ? defaultLlmModel : `${llmProvider}/${defaultLlmModel}`;
   return {
     databaseUrl:
       process.env.DATABASE_URL ??
@@ -112,6 +117,10 @@ export function loadConfig(): ApiConfig {
     openaiLlmModel: process.env.OPENAI_LLM_MODEL ?? "gpt-4.1-mini",
     openaiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
     metadataLlmModel: process.env.METADATA_LLM_MODEL ?? process.env.OLLAMA_LLM_MODEL ?? "qwen3:4b",
+    indexingAliasModel: process.env.INDEXING_ALIAS_MODEL ?? defaultIndexingModel,
+    indexingRelationshipModel: process.env.INDEXING_RELATIONSHIP_MODEL ?? defaultIndexingModel,
+    indexingClaimModel: process.env.INDEXING_CLAIM_MODEL ?? defaultIndexingModel,
+    indexingSummaryModel: process.env.INDEXING_SUMMARY_MODEL ?? defaultIndexingModel,
     metadataDiagnosticsEnabled: enabled(process.env.METADATA_DIAGNOSTICS_ENABLED, false),
     indexingDiagnosticsEnabled: enabled(process.env.INDEXING_DIAGNOSTICS_ENABLED, false),
     indexingDiagnosticsRetentionDays: Math.max(1, Number(process.env.INDEXING_DIAGNOSTICS_RETENTION_DAYS ?? 7)),

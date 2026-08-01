@@ -21,6 +21,7 @@ export type IndexingPlan = {
   requestedMode: IndexingRequestMode;
   stages: Record<IndexingStageName, IndexingStageDecision>;
 };
+export type IndexingProviderPreferences = Partial<Record<'aliases' | 'relationships' | 'claims' | 'summary', string>>;
 export type IndexingStageResult = {
   stage: IndexingStageName;
   status: IndexingStageStatus;
@@ -41,6 +42,7 @@ export type IndexingStageResult = {
 function route(model: string) {
   const [prefix, ...parts] = model.split('/');
   if (parts.length && ['openai', 'gemini', 'anthropic'].includes(prefix)) return { provider: prefix, model: parts.join('/'), execution: 'api_llm' as const };
+  if (parts.length && prefix === 'ollama') return { provider: 'ollama', model: parts.join('/'), execution: 'local_llm' as const };
   return { provider: 'ollama', model, execution: 'local_llm' as const };
 }
 
@@ -57,20 +59,24 @@ export function resolveIndexingPlan(config: ApiConfig, input: {
   hasFrontmatter?: boolean;
   chunkCount?: number;
   requestedStages?: Partial<Record<IndexingStageName, boolean>>;
+  providerPreferences?: IndexingProviderPreferences;
 } = {}): IndexingPlan {
   const requestedMode = input.mode ?? 'automatic';
   const wants = (stage: IndexingStageName, fallback: boolean) => input.requestedStages?.[stage] ?? fallback;
-  const primary = route(config.llmProvider === 'ollama' ? config.ollamaLlmModel : config.llmProvider === 'openai' ? `openai/${config.openaiLlmModel}` : config.llmProvider === 'gemini' ? `gemini/${config.geminiLlmModel}` : `anthropic/${config.anthropicLlmModel}`);
+  const primaryModel = config.llmProvider === 'ollama' ? config.ollamaLlmModel : config.llmProvider === 'openai' ? `openai/${config.openaiLlmModel}` : config.llmProvider === 'gemini' ? `gemini/${config.geminiLlmModel}` : `anthropic/${config.anthropicLlmModel}`;
+  const configuredModel = (stage: keyof IndexingProviderPreferences) => input.providerPreferences?.[stage]
+    ?? (stage === 'aliases' ? config.indexingAliasModel : stage === 'relationships' ? config.indexingRelationshipModel : stage === 'claims' ? config.indexingClaimModel : config.indexingSummaryModel)
+    ?? primaryModel;
   const llm = (stage: IndexingStageName, selected: ReturnType<typeof route>, reason: string): IndexingStageDecision => ({ stage, required: true, execution: selected.execution, provider: selected.provider, model: selected.model, reason, requestedBy: requestedMode === 'user_configured' ? 'user' : 'system' });
   return {
     version: 1, workspaceId: input.workspaceId, documentId: input.documentId, requestedMode,
     stages: {
       metadata: input.hasFrontmatter ? { stage: 'metadata', required: true, execution: 'deterministic', reason: 'Validated YAML/frontmatter is ingested without another extraction call.', requestedBy: 'policy' } : skipped('metadata', 'No frontmatter is present; metadata generation is a separate conversion workflow.'),
       entities: { stage: 'entities', required: true, execution: 'deterministic', reason: 'Frontmatter and regex entities must persist independently of LLM availability.', requestedBy: 'policy' },
-      aliases: wants('aliases', true) ? llm('aliases', primary, 'Enrich only after deterministic entity candidates are available.') : skipped('aliases', 'Not requested by indexing policy.'),
-      relationships: wants('relationships', true) ? llm('relationships', primary, 'Evidence-backed graph edges require a routed LLM stage.') : skipped('relationships', 'Not requested by indexing policy.'),
-      claims: wants('claims', true) ? llm('claims', primary, 'Evidence-backed claims are independent from relationships.') : skipped('claims', 'Not requested by indexing policy.'),
-      summary: wants('summary', true) ? llm('summary', primary, 'Document summary is an optional generated stage.') : skipped('summary', 'Not requested by indexing policy.'),
+      aliases: wants('aliases', true) ? llm('aliases', route(configuredModel('aliases')), 'Enrich only after deterministic entity candidates are available.') : skipped('aliases', 'Not requested by indexing policy.'),
+      relationships: wants('relationships', true) ? llm('relationships', route(configuredModel('relationships')), 'Evidence-backed graph edges require a routed LLM stage.') : skipped('relationships', 'Not requested by indexing policy.'),
+      claims: wants('claims', true) ? llm('claims', route(configuredModel('claims')), 'Evidence-backed claims are independent from relationships.') : skipped('claims', 'Not requested by indexing policy.'),
+      summary: wants('summary', true) ? llm('summary', route(configuredModel('summary')), 'Document summary is an optional generated stage.') : skipped('summary', 'Not requested by indexing policy.'),
       embeddings: { stage: 'embeddings', required: true, execution: 'deterministic', provider: config.embeddingProvider, model: config.embeddingProvider === 'ollama' ? config.ollamaEmbeddingModel : config.embeddingProvider === 'openai' ? config.openaiEmbeddingModel : config.geminiEmbeddingModel, reason: `Configured ${config.embeddingProvider} embedding route.`, requestedBy: 'policy' },
     },
   };

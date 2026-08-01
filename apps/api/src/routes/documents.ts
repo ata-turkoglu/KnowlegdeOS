@@ -17,7 +17,7 @@ import {
 } from "../services/documents.js";
 import { getConvertedFile } from "../services/conversions.js";
 import { cancelTrackedOperation, clearOperationHistory, createOperation, findRunningOperation, interruptAllRunningOperations, listOperations, updateOperation, type DocumentIndexingRecord } from "../services/operations.js";
-import type { IndexingRequestMode, IndexingStageName } from "../services/indexing-plan.js";
+import type { IndexingProviderPreferences, IndexingRequestMode, IndexingStageName } from "../services/indexing-plan.js";
 import { getGpuMetrics } from "../services/gpu.js";
 import { embedSelectedDocuments, getEmbeddingCoverage, invalidateSemanticIndex } from "../services/semantic-search.js";
 import { getWorkspaceStoragePaths } from "../services/storage.js";
@@ -46,12 +46,13 @@ type IndexingRequestBody = {
   documentNames?: string[];
   mode?: IndexingRequestMode;
   requestedStages?: Partial<Record<IndexingStageName, boolean>>;
+  providerPreferences?: IndexingProviderPreferences;
   /** Deprecated compatibility input. New clients select stages explicitly. */
   useLlm?: boolean;
 };
 
 function indexingIntent(body: IndexingRequestBody | undefined) {
-  if (body?.requestedStages || body?.mode === 'user_configured') return { mode: 'user_configured' as const, requestedStages: body.requestedStages };
+  if (body?.requestedStages || body?.providerPreferences || body?.mode === 'user_configured') return { mode: 'user_configured' as const, requestedStages: body.requestedStages, providerPreferences: body.providerPreferences };
   if (body?.useLlm === undefined) return { mode: 'automatic' as const };
   return { mode: 'user_configured' as const, requestedStages: { aliases: body.useLlm, relationships: body.useLlm, claims: body.useLlm, summary: body.useLlm } };
 }

@@ -23,3 +23,13 @@ test('requested graph skips do not disable deterministic entity persistence', ()
   assert.equal(plan.stages.aliases.execution, 'skip');
   assert.equal(plan.stages.relationships.execution, 'skip');
 });
+
+test('user-configured graph stages retain independent model selections', () => {
+  const plan = resolveIndexingPlan(config, {
+    mode: 'user_configured',
+    providerPreferences: { aliases: 'ollama/alias-local', relationships: 'anthropic/relationship-api', claims: 'openai/claim-api' }
+  });
+  assert.deepEqual([plan.stages.aliases.provider, plan.stages.aliases.model, plan.stages.aliases.execution], ['ollama', 'alias-local', 'local_llm']);
+  assert.deepEqual([plan.stages.relationships.provider, plan.stages.relationships.model, plan.stages.relationships.execution], ['anthropic', 'relationship-api', 'api_llm']);
+  assert.deepEqual([plan.stages.claims.provider, plan.stages.claims.model, plan.stages.claims.execution], ['openai', 'claim-api', 'api_llm']);
+});
