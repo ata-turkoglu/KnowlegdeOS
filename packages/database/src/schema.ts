@@ -204,6 +204,10 @@ export const entityAliases = pgTable(
     normalizedAlias: text("normalized_alias").notNull(),
     confidence: real("confidence").notNull().default(1),
     source: entityAliasSourceEnum("source").notNull().default("REGEX"),
+    documentId: uuid("document_id").references(() => documents.id, { onDelete: "set null" }),
+    provider: text("provider"),
+    model: text("model"),
+    evidenceSnippet: text("evidence_snippet"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => ({
@@ -290,6 +294,8 @@ export const relationships = pgTable(
     confidence: real("confidence").notNull().default(1),
     /** Semantic relationship provenance. Co-occurrence is derived at runtime. */
     origin: text("origin").notNull().default("LLM"),
+    provider: text("provider"),
+    model: text("model"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => ({

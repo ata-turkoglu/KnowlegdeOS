@@ -41,6 +41,7 @@ export type EntityAliasInput = {
   alias: string;
   confidence: number;
   source: 'FRONTMATTER' | 'LLM';
+  evidenceSnippet?: string;
 };
 export type CandidatePersistenceResult = {
   inputCandidateCount: number;
@@ -187,6 +188,7 @@ export async function replaceDocumentEntities(
   documentId: string,
   extracted: ExtractedEntity[],
   declaredAliases: EntityAliasInput[] = [],
+  provenance?: { provider?: string; model?: string },
 ) {
   const dynamicMetadata: DynamicMetadata = {};
   for (const item of extracted) {
@@ -343,6 +345,10 @@ export async function replaceDocumentEntities(
             normalizedAlias: normalizeForSearch(item.alias),
             confidence: item.confidence,
             source: aliasSource(item.source),
+            documentId,
+            provider: item.source === 'LLM' ? provenance?.provider ?? null : null,
+            model: item.source === 'LLM' ? provenance?.model ?? null : null,
+            evidenceSnippet: item.evidenceSnippet ?? null,
           })
           .onConflictDoNothing();
         acceptedAliases += 1;
@@ -779,6 +785,7 @@ export async function replaceDocumentRelationships(
   workspaceSlug: string,
   documentId: string,
   extracted: LLMRelationship[],
+  provenance?: { provider?: string; model?: string },
 ) {
   return withDb(config, async ({ db }) =>
     db.transaction(async (tx) => {
@@ -846,7 +853,7 @@ export async function replaceDocumentRelationships(
       // candidates failed validation. A trusted explicit clear is separate.
       if (!accepted.length) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
       await tx.delete(relationships).where(and(eq(relationships.documentId, documentId), eq(relationships.origin, 'LLM')));
-      await tx.insert(relationships).values(accepted.map((item) => ({ workspaceId: ws.id, documentId, ...item, confidence: 0.8, origin: 'LLM' })));
+      await tx.insert(relationships).values(accepted.map((item) => ({ workspaceId: ws.id, documentId, ...item, confidence: 0.8, origin: 'LLM', provider: provenance?.provider ?? null, model: provenance?.model ?? null })));
       return { inputCandidateCount: extracted.length, acceptedCount: accepted.length, rejectedCount: extracted.length - accepted.length, rejectionCounts, rejectionSamples } satisfies CandidatePersistenceResult;
     }),
   );

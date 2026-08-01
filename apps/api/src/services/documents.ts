@@ -290,13 +290,13 @@ export async function reindexStoredDocument(
       await executeGraphStage<{ aliases?: Array<{ canonical?: string; aliases?: string[] }> }>('aliases', buildAliasExtractionPrompt(ingestion.content, entityNames), async (result) => {
         const aliases: EntityAliasInput[] = (result.aliases ?? []).flatMap((group) => (group.aliases ?? []).map((alias) => ({ canonical: group.canonical?.trim() ?? '', alias: alias.trim(), confidence: 0.8, source: 'LLM' as const }))).filter((alias) => alias.canonical && alias.alias);
         generated.aliases = (result.aliases ?? []).flatMap((group) => (group.aliases ?? []).length ? [{ canonical: group.canonical ?? '', aliases: group.aliases ?? [] }] : []);
-        const persisted = await replaceDocumentEntities(config, slug, document.id, deterministicEntities, aliases);
+        const persisted = await replaceDocumentEntities(config, slug, document.id, deterministicEntities, aliases, { provider: plan.stages.aliases.provider, model: plan.stages.aliases.model });
         const warnings = persisted.inputCandidateCount > 0 && persisted.acceptedCount === 0 ? ['All alias candidates were rejected.'] : undefined;
         stageResults.aliases = { ...stageResults.aliases, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, rejectionSamples: persisted.rejectionSamples, warnings };
       });
       await executeGraphStage<{ relationships?: LLMRelationship[] }>('relationships', buildRelationshipExtractionPrompt(ingestion.content, entityNames), async (result) => {
         generated.relationships = result.relationships ?? [];
-        const persisted = await replaceDocumentRelationships(config, slug, document.id, generated.relationships);
+        const persisted = await replaceDocumentRelationships(config, slug, document.id, generated.relationships, { provider: plan.stages.relationships.provider, model: plan.stages.relationships.model });
         const warnings = persisted.inputCandidateCount > 0 && persisted.acceptedCount === 0 ? ['All relationship candidates were rejected; existing graph rows were preserved.'] : undefined;
         stageResults.relationships = { ...stageResults.relationships, status: warnings ? 'succeeded_with_warnings' : 'succeeded', inputCandidateCount: persisted.inputCandidateCount, acceptedCount: persisted.acceptedCount, rejectedCount: persisted.rejectedCount, rejectionCounts: persisted.rejectionCounts, rejectionSamples: persisted.rejectionSamples, warnings };
       });
