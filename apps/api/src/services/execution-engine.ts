@@ -187,10 +187,10 @@ export async function executeDirectPlan(
     }
 
     const aggregateNode = plan.nodes.find((node) =>
-      ['DISTINCT', 'GROUP_BY', 'FACET'].includes(node.op),
+      isAggregateOperation(node.op),
     );
 
-    if (aggregateNode) {
+    if (aggregateNode && isAggregateOperation(aggregateNode.op)) {
       if (!aggregateNode.fieldId) {
         return createDirectResult(
           'Gruplama veya tekil değer işlemi için geçerli bir metadata alanı belirlenemedi.',
@@ -255,6 +255,17 @@ function buildAggregateAnswer(
   }
 
   return rows.map((row) => `${row.value ?? ''}: ${row.count ?? 0}`).join('\n');
+}
+
+/** Doğrudan metadata aggregation operasyonlarını type-safe biçimde ayırır. */
+function isAggregateOperation(
+  operation: ExecutionPlan['nodes'][number]['op'],
+): operation is 'DISTINCT' | 'GROUP_BY' | 'FACET' {
+  return (
+    operation === 'DISTINCT' ||
+    operation === 'GROUP_BY' ||
+    operation === 'FACET'
+  );
 }
 
 /**
