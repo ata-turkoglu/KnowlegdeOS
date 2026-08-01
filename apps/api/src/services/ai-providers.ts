@@ -9,6 +9,11 @@ function providerForSelection(config: ApiConfig, selection: string, temperature:
   if (provider === "anthropic") return new AnthropicProvider(requireKey(config.anthropicApiKey, "Anthropic"), model, temperature, config.anthropicBaseUrl);
   return new OllamaProvider(config.ollamaBaseUrl, model, config.ollamaLlmTimeoutMs, temperature, config.ollamaKeepAlive);
 }
+/** Resolves an explicitly planned role route. Callers must persist the selected
+ * provider/model in the plan rather than silently inheriting the answer model. */
+export function getLlmProviderForSelection(config: ApiConfig, selection: string, profile: LlmTemperatureProfile = 'extraction'): LLMProvider {
+  return providerForSelection(config, selection, config.llmTemperatures[profile]);
+}
 export function getLlmProvider(config: ApiConfig, profile?: LlmTemperatureProfile): LLMProvider {
   const temperature = profile ? config.llmTemperatures[profile] : config.llmTemperature;
   if (config.llmProvider === "openai") return new OpenAIProvider(requireKey(config.openaiApiKey, "OpenAI"), config.openaiLlmModel, temperature);

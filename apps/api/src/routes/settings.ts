@@ -523,7 +523,8 @@ export async function registerSettingsRoutes(app: FastifyInstance, config: ApiCo
     activeWorkspaceReindexOperations.set(workspaceSlug, operationId);
     void reindexWorkspaceDocuments(config, workspaceSlug, {
       signal: controller.signal,
-      useLlm: request.body?.useLlm !== false,
+      mode: request.body?.useLlm === undefined ? 'automatic' : 'user_configured',
+      requestedStages: request.body?.useLlm === undefined ? undefined : { aliases: request.body.useLlm, relationships: request.body.useLlm, claims: request.body.useLlm, summary: request.body.useLlm },
       onProgress: (progress) => Object.assign(operation, progress)
     }).then(() => {
       operation.status = "completed";

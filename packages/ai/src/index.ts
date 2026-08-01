@@ -86,7 +86,13 @@ export type LLMExtractionResult = {
   summary: string;
 };
 
-export { buildEntityExtractionPrompt } from "./prompts.js";
+export {
+  buildAliasExtractionPrompt,
+  buildClaimExtractionPrompt,
+  buildEntityExtractionPrompt,
+  buildRelationshipExtractionPrompt,
+  buildSummaryExtractionPrompt
+} from "./prompts.js";
 export {
   OllamaEmbeddingProvider,
   OllamaProvider,

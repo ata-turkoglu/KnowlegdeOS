@@ -41,7 +41,7 @@ Beykozlu Hacı Ali Bey
     title: "D-1/a",
     document_type: "senet",
     date: "1927-08-21",
-    date_text: ["21 Ağustos 1927"],
+    date_text: "21 Ağustos 1927",
     people: ["Beykozlu Hacı Ali Bey"],
     case_numbers: ["Yevmiye Numrosu: 15693"],
     notes: "birinci not"

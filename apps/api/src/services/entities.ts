@@ -42,6 +42,12 @@ export type EntityAliasInput = {
   confidence: number;
   source: 'FRONTMATTER' | 'LLM';
 };
+export type CandidatePersistenceResult = {
+  inputCandidateCount: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  rejectionCounts: Record<string, number>;
+};
 export type EntityDocumentLink = {
   documentId?: string;
   documentName: string;
@@ -197,8 +203,11 @@ export async function replaceDocumentEntities(
     ];
   }
   await registerWorkspaceMetadataFields(config, workspaceSlug, dynamicMetadata);
-  await withDb(config, async ({ db }) =>
+  const persistence = await withDb(config, async ({ db }) =>
     db.transaction(async (tx) => {
+      const rejectionCounts: Record<string, number> = {};
+      let acceptedAliases = 0;
+      const rejectAlias = (reason: string) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; };
       const ws = await workspace(tx, slugify(workspaceSlug));
       const resolved = resolveDocumentEntityAliases(extracted, declaredAliases);
       const fields = await tx
@@ -319,7 +328,8 @@ export async function replaceDocumentEntities(
       }
       for (const item of resolved.aliases) {
         const entity = byPersonValue.get(normalizeForSearch(item.canonical));
-        if (!entity) continue;
+        if (!entity) { rejectAlias('canonical_not_persisted'); continue; }
+        if (normalizeForSearch(item.canonical) === normalizeForSearch(item.alias)) { rejectAlias('same_normalized_value'); continue; }
         await tx
           .insert(entityAliases)
           .values({
@@ -330,6 +340,7 @@ export async function replaceDocumentEntities(
             source: aliasSource(item.source),
           })
           .onConflictDoNothing();
+        acceptedAliases += 1;
       }
       await tx.delete(entities).where(
         and(
@@ -340,9 +351,11 @@ export async function replaceDocumentEntities(
           sql`not exists (select 1 from ${documentEntities} de where de.entity_id = ${entities.id})`,
         ),
       );
+      return { inputCandidateCount: resolved.aliases.length, acceptedCount: acceptedAliases, rejectedCount: resolved.aliases.length - acceptedAliases, rejectionCounts } satisfies CandidatePersistenceResult;
     }),
   );
   await augmentChunkEntityLinks(config, workspaceSlug, documentId);
+  return persistence;
 }
 
 /** Frontmatter metadata değerlerini entity kayıtlarına dönüştürerek belge entity indeksini yeniler. */
@@ -357,11 +370,20 @@ export async function replaceDocumentMetadataEntities(
     workspaceSlug,
     metadata,
   );
+  return replaceDocumentEntities(config, workspaceSlug, documentId, metadataEntityCandidates(registered.metadata, registered.fields));
+}
+
+/** Converts entity-enabled validated frontmatter to deterministic candidates;
+ * callers may combine this with regex candidates before one replacement. */
+export function metadataEntityCandidates(
+  metadata: DynamicMetadata,
+  fields: Array<{ key: string; entityEnabled: boolean }>,
+) {
   const fieldByKey = new Map(
-    registered.fields.map((field) => [field.key, field]),
+    fields.map((field) => [field.key, field]),
   );
   const extracted: ExtractedEntity[] = [];
-  for (const [key, raw] of Object.entries(registered.metadata)) {
+  for (const [key, raw] of Object.entries(metadata)) {
     const field = fieldByKey.get(key);
     if (!field?.entityEnabled) continue;
     for (const item of Array.isArray(raw) ? raw : [raw]) {
@@ -377,7 +399,7 @@ export async function replaceDocumentMetadataEntities(
       });
     }
   }
-  return replaceDocumentEntities(config, workspaceSlug, documentId, extracted);
+  return extracted;
 }
 
 /** Eski entity türlerini dinamik workspace alan anahtarlarına dönüştürür. */
@@ -756,22 +778,16 @@ export async function replaceDocumentRelationships(
   return withDb(config, async ({ db }) =>
     db.transaction(async (tx) => {
       const ws = await workspace(tx, slugify(workspaceSlug));
-      await tx
-        .delete(relationships)
-        .where(
-          and(
-            eq(relationships.documentId, documentId),
-            eq(relationships.origin, 'LLM'),
-          ),
-        );
-      if (!extracted.length) return;
+      const rejectionCounts: Record<string, number> = {};
+      const reject = (reason: string) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; };
+      if (!extracted.length) return { inputCandidateCount: 0, acceptedCount: 0, rejectedCount: 0, rejectionCounts } satisfies CandidatePersistenceResult;
 
       const [document] = await tx
         .select({ content: documents.content })
         .from(documents)
         .where(eq(documents.id, documentId))
         .limit(1);
-      if (!document) return;
+      if (!document) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts: { document_not_found: extracted.length } } satisfies CandidatePersistenceResult;
       const indexedEntities = await tx
         .select({ entity: entities })
         .from(documentEntities)
@@ -795,6 +811,7 @@ export async function replaceDocumentRelationships(
       }
       const normalizedContent = normalizeForSearch(document.content);
       const seen = new Set<string>();
+      const accepted: Array<{ sourceEntityId: string; targetEntityId: string; relation: string; evidenceSnippet: string }> = [];
 
       for (const item of extracted) {
         const source = byNormalizedValue.get(normalizeForSearch(item.source));
@@ -802,36 +819,28 @@ export async function replaceDocumentRelationships(
         const relation = item.relation.trim();
         const evidenceSnippet = item.evidence.trim();
         const normalizedEvidence = normalizeForSearch(evidenceSnippet);
+        if (!source) { reject('source_entity_not_found'); continue; }
+        if (!target) { reject('target_entity_not_found'); continue; }
+        if (source.id === target.id) { reject('same_entity'); continue; }
+        if (!relation) { reject('blank_predicate'); continue; }
+        if (!normalizedEvidence) { reject('blank_evidence'); continue; }
+        if (!normalizedContent.includes(normalizedEvidence)) { reject('evidence_not_grounded'); continue; }
         if (
-          !source ||
-          !target ||
-          source.id === target.id ||
-          !relation ||
-          !normalizedEvidence
+          !evidenceMentionsEntity(normalizedEvidence, source, aliases)
         )
-          continue;
-        if (!normalizedContent.includes(normalizedEvidence)) continue;
-        if (
-          !evidenceMentionsEntity(normalizedEvidence, source, aliases) ||
-          !evidenceMentionsEntity(normalizedEvidence, target, aliases)
-        )
-          continue;
+          { reject('source_not_in_evidence'); continue; }
+        if (!evidenceMentionsEntity(normalizedEvidence, target, aliases)) { reject('target_not_in_evidence'); continue; }
         const key = `${source.id}:${relation}:${target.id}`;
-        if (seen.has(key)) continue;
+        if (seen.has(key)) { reject('duplicate'); continue; }
         seen.add(key);
-        await tx
-          .insert(relationships)
-          .values({
-            workspaceId: ws.id,
-            documentId,
-            sourceEntityId: source.id,
-            relation,
-            targetEntityId: target.id,
-            evidenceSnippet,
-            confidence: 0.8,
-            origin: 'LLM',
-          });
+        accepted.push({ sourceEntityId: source.id, targetEntityId: target.id, relation, evidenceSnippet });
       }
+      // Do not erase a previously usable graph merely because all new
+      // candidates failed validation. A trusted explicit clear is separate.
+      if (!accepted.length) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts } satisfies CandidatePersistenceResult;
+      await tx.delete(relationships).where(and(eq(relationships.documentId, documentId), eq(relationships.origin, 'LLM')));
+      await tx.insert(relationships).values(accepted.map((item) => ({ workspaceId: ws.id, documentId, ...item, confidence: 0.8, origin: 'LLM' })));
+      return { inputCandidateCount: extracted.length, acceptedCount: accepted.length, rejectedCount: extracted.length - accepted.length, rejectionCounts } satisfies CandidatePersistenceResult;
     }),
   );
 }
@@ -843,12 +852,11 @@ export async function replaceDocumentClaims(
   workspaceSlug: string,
   documentId: string,
   extracted: LLMClaim[],
-) {
+) : Promise<CandidatePersistenceResult> {
+  if (!extracted.length) return { inputCandidateCount: 0, acceptedCount: 0, rejectedCount: 0, rejectionCounts: {} };
   return withDb(config, async ({ db }) =>
     db.transaction(async (tx) => {
       const ws = await workspace(tx, slugify(workspaceSlug));
-      await tx.delete(claims).where(eq(claims.documentId, documentId));
-      if (!extracted.length) return;
       const indexed = await tx
         .select({ entity: entities })
         .from(documentEntities)
@@ -875,21 +883,24 @@ export async function replaceDocumentClaims(
         .from(documentChunks)
         .where(eq(documentChunks.documentId, documentId));
       const seen = new Set<string>();
+      const rejectionCounts: Record<string, number> = {};
+      const reject = (reason: string) => { rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1; };
+      const accepted: Array<typeof claims.$inferInsert> = [];
       for (const item of extracted) {
         const subject = item.subject?.trim();
         const predicate = item.predicate?.trim();
         const object = item.object?.trim();
         const evidence = item.evidence?.trim();
-        if (!subject || !predicate || !object || !evidence) continue;
+        if (!subject || !predicate || !object || !evidence) { reject('blank_required_field'); continue; }
         const normalizedEvidence = normalizeForSearch(evidence);
         const chunk = chunks.find((candidate) =>
           candidate.normalizedContent.includes(normalizedEvidence),
         );
-        if (!chunk) continue;
+        if (!chunk) { reject('evidence_not_grounded'); continue; }
         const key = `${normalizeForSearch(subject)}:${normalizeForSearch(predicate)}:${normalizeForSearch(object)}:${normalizedEvidence}`;
-        if (seen.has(key)) continue;
+        if (seen.has(key)) { reject('duplicate'); continue; }
         seen.add(key);
-        await tx.insert(claims).values({
+        accepted.push({
           workspaceId: ws.id,
           documentId,
           chunkId: chunk.id,
@@ -911,6 +922,10 @@ export async function replaceDocumentClaims(
           origin: 'LLM',
         });
       }
+      if (!accepted.length) return { inputCandidateCount: extracted.length, acceptedCount: 0, rejectedCount: extracted.length, rejectionCounts } satisfies CandidatePersistenceResult;
+      await tx.delete(claims).where(and(eq(claims.documentId, documentId), eq(claims.origin, 'LLM')));
+      await tx.insert(claims).values(accepted);
+      return { inputCandidateCount: extracted.length, acceptedCount: accepted.length, rejectedCount: extracted.length - accepted.length, rejectionCounts } satisfies CandidatePersistenceResult;
     }),
   );
 }

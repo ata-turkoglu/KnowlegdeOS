@@ -15,6 +15,7 @@ import {
 } from "../services/documents.js";
 import { getConvertedFile } from "../services/conversions.js";
 import { cancelTrackedOperation, clearOperationHistory, createOperation, findRunningOperation, interruptAllRunningOperations, listOperations, updateOperation } from "../services/operations.js";
+import type { IndexingRequestMode, IndexingStageName } from "../services/indexing-plan.js";
 import { getGpuMetrics } from "../services/gpu.js";
 import { embedSelectedDocuments, getEmbeddingCoverage, invalidateSemanticIndex } from "../services/semantic-search.js";
 
@@ -37,6 +38,19 @@ type BatchReindexOperation = {
 };
 
 const batchReindexOperations = new Map<string, BatchReindexOperation>();
+type IndexingRequestBody = {
+  documentNames?: string[];
+  mode?: IndexingRequestMode;
+  requestedStages?: Partial<Record<IndexingStageName, boolean>>;
+  /** Deprecated compatibility input. New clients select stages explicitly. */
+  useLlm?: boolean;
+};
+
+function indexingIntent(body: IndexingRequestBody | undefined) {
+  if (body?.requestedStages || body?.mode === 'user_configured') return { mode: 'user_configured' as const, requestedStages: body.requestedStages };
+  if (body?.useLlm === undefined) return { mode: 'automatic' as const };
+  return { mode: 'user_configured' as const, requestedStages: { aliases: body.useLlm, relationships: body.useLlm, claims: body.useLlm, summary: body.useLlm } };
+}
 const activeBatchReindexOperations = new Map<string, string>();
 const embeddingOperations = new Map<string, AbortController>();
 
@@ -220,7 +234,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
 
   app.post<{
     Params: { workspaceSlug: string };
-    Body: { documentNames?: string[]; useLlm?: boolean };
+    Body: IndexingRequestBody;
   }>("/api/documents/:workspaceSlug/reindex-batch", async (request, reply) => {
     const documentNames = request.body?.documentNames?.filter(Boolean) ?? [];
     if (documentNames.length === 0) {
@@ -242,28 +256,32 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
     };
     batchReindexOperations.set(operationId, operation);
     activeBatchReindexOperations.set(request.params.workspaceSlug, operationId);
-    const persisted = await createOperation(config, { workspaceSlug: request.params.workspaceSlug, kind: "index", targetName: documentNames.join(", "), documentNames, status: "running", stage: "Preparing document", progress: 0, retry: { useLlm: request.body?.useLlm !== false } });
+    const intent = indexingIntent(request.body);
+    const persisted = await createOperation(config, { workspaceSlug: request.params.workspaceSlug, kind: "index", targetName: documentNames.join(", "), documentNames, status: "running", stage: "Preparing document", progress: 0, retry: { mode: intent.mode } });
 
     void (async () => {
       try {
         const indexedDocumentNames: string[] = [];
+        let partial = false;
         for (const documentName of documentNames) {
           if (operation.controller.signal.aborted) break;
           operation.documentName = documentName;
           await updateOperation(config, request.params.workspaceSlug, persisted.id, { stage: "Preparing document", progress: Math.round((operation.completed / operation.total) * 100) });
-          await reindexStoredDocument(config, {
+          const indexed = await reindexStoredDocument(config, {
             workspaceSlug: request.params.workspaceSlug,
             documentName,
-            useLlm: request.body?.useLlm !== false,
+            ...intent,
             signal: operation.controller.signal,
             invalidateSemanticIndex: false,
             onProgress: (stage) => void updateOperation(config, request.params.workspaceSlug, persisted.id, { stage })
           });
+          await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: indexed.indexingPlan, stageResults: indexed.stageResults });
+          partial ||= Boolean(indexed.llmExtractionError) || Object.values(indexed.stageResults ?? {}).some((stage) => stage.status === 'succeeded_with_warnings');
           operation.completed += 1;
           indexedDocumentNames.push(documentName);
         }
         operation.status = operation.controller.signal.aborted ? "cancelled" : "completed";
-        await updateOperation(config, request.params.workspaceSlug, persisted.id, { status: operation.status === "completed" ? "completed" : "cancelled", stage: operation.status === "completed" ? "Completed" : "Cancelled", progress: operation.status === "completed" ? 100 : Math.round((operation.completed / operation.total) * 100) });
+        await updateOperation(config, request.params.workspaceSlug, persisted.id, { status: operation.status === "completed" ? (partial ? 'partial' : 'completed') : "cancelled", stage: operation.status === "completed" ? (partial ? 'Completed with graph-stage failures' : "Completed") : "Cancelled", progress: operation.status === "completed" ? 100 : Math.round((operation.completed / operation.total) * 100) });
         if (operation.status === "completed" && indexedDocumentNames.length > 0) {
           const embeddingOperation = await createOperation(config, { workspaceSlug: request.params.workspaceSlug, kind: "embedding", targetName: `${indexedDocumentNames.length} document${indexedDocumentNames.length === 1 ? "" : "s"}`, documentNames: indexedDocumentNames, status: "running", stage: "Creating embeddings", progress: 0 });
           const embeddingController = new AbortController();
@@ -431,9 +449,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
       workspaceSlug: string;
       documentName: string;
     };
-    Body: {
-      useLlm?: boolean;
-    };
+    Body: IndexingRequestBody;
   }>(
     "/api/documents/:workspaceSlug/:documentName/reindex",
     async (request, reply) => {
@@ -450,7 +466,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
         status: "running",
         stage: "Starting reindexing",
         progress: 0,
-        retry: { documentName: request.params.documentName, useLlm: request.body?.useLlm !== false }
+        retry: { documentName: request.params.documentName, mode: indexingIntent(request.body).mode }
       });
       request.raw.once("aborted", abort);
       updateReindexOperation(resolvedOperationId, {
@@ -462,19 +478,21 @@ export async function registerDocumentRoutes(app: FastifyInstance, config: ApiCo
         const document = await reindexStoredDocument(config, {
           workspaceSlug: request.params.workspaceSlug,
           documentName: request.params.documentName,
-          useLlm: request.body?.useLlm !== false,
+          ...indexingIntent(request.body),
           signal: controller.signal,
           onProgress: (stage) => {
             updateReindexOperation(resolvedOperationId, { stage, status: "running" });
             void updateOperation(config, request.params.workspaceSlug, persisted.id, { stage, progress: stage === "Completed" ? 100 : 50 });
           }
         });
+        await updateOperation(config, request.params.workspaceSlug, persisted.id, { indexingPlan: document.indexingPlan, stageResults: document.stageResults });
 
         updateReindexOperation(resolvedOperationId, {
           stage: controller.signal.aborted ? "Cancelled" : "Completed",
           status: controller.signal.aborted ? "cancelled" : "completed"
         });
-        await updateOperation(config, request.params.workspaceSlug, persisted.id, { status: controller.signal.aborted ? "cancelled" : "completed", stage: controller.signal.aborted ? "Cancelled" : "Completed", progress: controller.signal.aborted ? 50 : 100 });
+        const partial = Boolean(document.llmExtractionError) || Object.values(document.stageResults ?? {}).some((stage) => stage.status === 'succeeded_with_warnings');
+        await updateOperation(config, request.params.workspaceSlug, persisted.id, { status: controller.signal.aborted ? "cancelled" : partial ? 'partial' : "completed", stage: controller.signal.aborted ? "Cancelled" : partial ? 'Completed with graph-stage warnings' : "Completed", progress: controller.signal.aborted ? 50 : 100 });
 
         return reply.send(document);
       } catch (error) {

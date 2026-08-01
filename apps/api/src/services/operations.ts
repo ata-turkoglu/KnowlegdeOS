@@ -2,19 +2,21 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ApiConfig } from "../config/env.js";
+import type { IndexingPlan, IndexingStageResult } from './indexing-plan.js';
 import { ensureWorkspaceStorage, getWorkspaceStoragePaths, resolveStorageRoot, writeFileAtomically } from "./storage.js";
 
 export type OperationKind = "upload" | "index" | "reindex" | "embedding" | "yaml";
-export type OperationStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type OperationStatus = "running" | "completed" | "partial" | "completed_with_warnings" | "failed" | "cancelled" | "interrupted";
 export type StoredOperation = {
   id: string; workspaceSlug: string; kind: OperationKind; targetName: string;
   status: OperationStatus; stage: string; progress: number; error?: string;
   documentNames?: string[];
-  retry?: { documentName?: string; useLlm?: boolean }; createdAt: string; updatedAt: string; completedAt?: string;
+  /** Legacy useLlm is read-only compatibility for history written before plan v1. */
+  retry?: { documentName?: string; useLlm?: boolean; mode?: 'automatic' | 'user_configured' }; indexingPlan?: IndexingPlan; stageResults?: Record<string, IndexingStageResult>; traceId?: string; createdAt: string; updatedAt: string; completedAt?: string;
 };
 
 const fileName = "operations.json";
-const terminal = new Set<OperationStatus>(["completed", "failed", "cancelled", "interrupted"]);
+const terminal = new Set<OperationStatus>(["completed", "completed_with_warnings", "partial", "failed", "cancelled", "interrupted"]);
 const retentionMs = 7 * 24 * 60 * 60 * 1000;
 const controllers = new Map<string, AbortController>();
 
