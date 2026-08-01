@@ -51,4 +51,6 @@ For a controlled CLI rebuild, first run `corepack pnpm metadata:audit --root=con
 
 To continue a previous report, reuse its path: `--resume --output=rebuild-report.json` skips documents already listed as indexed. `--retry-failed --output=rebuild-report.json` selects only previously failed documents. Both options retain the same explicit apply/confirmation requirement.
 
+Audit persisted indexing history before a broader rebuild with `corepack pnpm indexing:audit --format=text`; use the default JSON output or `--output=graph-audit.json` for an archival report. It flags legacy global-LLM history, missing per-stage records, failed stages reported as completed, and zero-accepted or fully rejected alias/relationship candidates.
+
 `12.06.1974 tarihli belgeler` is a document-date query and receives the canonical `date = 1974-06-12` metadata filter. `12.06.1974 tarihinde ne olmuştu?` is intentionally an event/content-date question: it keeps hybrid content retrieval and does not incorrectly restrict results to documents authored on that date.
