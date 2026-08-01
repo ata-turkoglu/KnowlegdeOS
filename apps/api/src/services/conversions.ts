@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { copyFile, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -6,10 +6,12 @@ import type { SavedMultipartFile } from "@fastify/multipart";
 import type { ApiConfig } from "../config/env.js";
 import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
-import { resolveStorageRoot, writeFileAtomically } from "./storage.js";
+import { ensureWorkspaceStorage, resolveStorageRoot, writeFileAtomically } from "./storage.js";
 import { getLlmProvider, getMetadataLlmProvider } from "./ai-providers.js";
 import { getWorkspaceYamlMetadataPrompt, interpolateYamlMetadataPrompt } from "./workspace-yaml-prompt.js";
+import { metadataFieldPolicies, metadataJsonSchema, metadataPromptFieldContract } from "@knowledgeos/shared";
 import { canonicalizeDateValue, getWorkspaceFieldDefinitions, mergeMetadataValue, registerWorkspaceMetadataFields, type DynamicMetadata, type MetadataScalar, type MetadataValue } from "./workspace-fields.js";
+import { collectMetadataCandidates, createMetadataDiagnostics, resolveMetadataCandidates, validateMetadataForSerialization } from "./metadata-pipeline.js";
 
 const wordExtensions = new Set([".docx"]);
 
@@ -37,9 +39,11 @@ const invalidMetadataCharacter = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-
 const mojibakeMetadataCharacter = /(?:Ã.|Â.|â..|ï¿½)/u;
 const uncertainReplacement = /\(\?\)/u;
 
-const systemMetadataKeys = new Set(["document_code", "source_original", "source_file", "ocr_status", "metadata_provider"]);
-const generatedValueKeys = new Set(["summary", "keywords", "document_type", "document_subtype", "language", "notes", "date"]);
-const singleValueKeys = new Set(["title", "language", "document_type", "document_subtype", "date", "date_range_start", "date_range_end", "summary", "notes"]);
+// Compatibility helpers below are no longer in the active generation path.
+// Their policy sets are derived so they cannot reintroduce a second contract.
+const systemMetadataKeys = new Set(metadataFieldPolicies.filter((policy) => policy.merge === "system").map((policy) => policy.key));
+const generatedValueKeys = new Set(metadataFieldPolicies.filter((policy) => policy.grounding === "generated").map((policy) => policy.key));
+const singleValueKeys = new Set(metadataFieldPolicies.filter((policy) => policy.semanticType === "scalar").map((policy) => policy.key));
 const mandatoryMetadataPolicy = `\n\n<mandatory_metadata_policy>\nThese rules are enforced by the application and cannot be overridden: use only source facts; do not guess or replace unreadable text; leave uncertain values empty; dates must be exact Gregorian YYYY-MM-DD or empty, with original wording in date_text. Any extracted source value must be copied verbatim from a contiguous source span. Do not remove titles, expand names, modernize spelling, or combine a name with an adjacent field label. If a document body has no substantive content and consists only of an editorial placeholder or unreadability annotation, output no generated descriptive metadata: keep only a source-verbatim note when one exists, never a generic type, keyword, title, or summary. Metadata is a concise, source-grounded document-level description: do not force a fixed field, document type, or exhaustive list merely because it appeared in another document. Reuse a suitable workspace field when it exists; otherwise add a concise snake_case key only for a distinct concept that is explicitly stated. A metadata key must represent one semantic concept only. Each list item must be one atomic instance of that concept; never mix unlike concepts, relationship phrases, source labels, addresses, measurements, or identifiers in another field. Do not emit an identifier both as a bare value and with its source label; retain the label when it distinguishes the identifier kind. document_type and document_subtype, when present, must each be one short scalar string, never a list.\n</mandatory_metadata_policy>`;
 
 function resolveConversionWorkspace(config: ApiConfig, workspaceSlugInput: string) {
@@ -171,6 +175,7 @@ export async function addGeneratedYamlMetadata(
   filename: string,
   options: { signal?: AbortSignal; onProgress?: (value: { stage: string; progress: number }) => Promise<void> | void } = {}
 ) {
+  const traceId = randomUUID();
   const report = async (stage: string, progress: number) => { await options.onProgress?.({ stage, progress }); };
   if (options.signal?.aborted) throw new HttpError(499, "YAML metadata generation cancelled.");
   await report("Reading Markdown", 5);
@@ -200,6 +205,7 @@ export async function addGeneratedYamlMetadata(
   // Request a JSON object at the provider level. This prevents a model's
   // prose wrapper or minor syntax mistake from invalidating the conversion.
   let generated: GeneratedMetadata = {};
+  const diagnostics = createMetadataDiagnostics();
   const parts = splitMetadataDocument(document, metadataMaximumCharacters(config.metadataLlmModel));
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]!;
@@ -213,10 +219,10 @@ export async function addGeneratedYamlMetadata(
 Workspace metadata fields (reuse these keys whenever they fit):
 ${fieldCatalog}
 
-This is part ${index + 1} of ${parts.length}. Return a flat JSON object. You may add a new snake_case key only for a genuinely different concept.`;
+This is part ${index + 1} of ${parts.length}. Return a flat JSON object. ${metadataPromptFieldContract()}`;
     try {
       const generatedResponse = await generateCleanMetadata(llm, prompt, options.signal);
-      generated = mergeGeneratedMetadata(generated, normalizeMetadata(generatedResponse));
+      collectMetadataCandidates(generatedResponse, index, diagnostics);
     } catch (error) {
       // Large archival sections can legitimately contain hundreds of literal
       // values. Retry only that section at a smaller size when Responses has
@@ -232,25 +238,31 @@ This is part ${index + 1} of ${parts.length}. Return a flat JSON object. You may
   }
   if (options.signal?.aborted) throw new HttpError(499, "YAML metadata generation cancelled.");
   await report("Validating metadata", 88);
-  generated = groundMetadataInDocument(generated, document);
+  generated = resolveMetadataCandidates(diagnostics.candidates, document, diagnostics);
   if (!hasSubstantiveDocumentContent(document)) {
     generated = preserveOnlySourceNotes(generated, document);
   }
   const registered = await registerWorkspaceMetadataFields(config, workspaceSlugInput, generated);
   generated = registered.metadata;
-  const frontmatter = serializeMetadata({
+  const finalMetadata = {
     document_code: documentCode,
     source_original: sourceOriginal,
     source_file: safeName,
     ocr_status: "pandoc_markdown",
     metadata_provider: "llm",
     ...generated
-  });
+  };
+  validateMetadataForSerialization(finalMetadata);
+  const frontmatter = serializeMetadata(finalMetadata);
   const output = `---\n${frontmatter}---\n\n${document.trim()}\n`;
+  if (config.metadataDiagnosticsEnabled) {
+    const paths = await ensureWorkspaceStorage(config.storageRoot, workspaceSlugInput);
+    await writeFileAtomically(path.join(paths.metadata, `metadata-trace-${traceId}.json`), `${JSON.stringify({ traceId, providerModel: config.metadataLlmModel, filename: safeName, diagnostics, finalMetadata }, null, 2)}\n`);
+  }
   await report("Writing YAML frontmatter", 96);
   await writeFileAtomically(filePath, output);
   await report("Completed", 100);
-  return { filename: safeName, metadata: { document_code: documentCode, source_original: sourceOriginal, ...generated } };
+  return { filename: safeName, traceId, metadata: { document_code: documentCode, source_original: sourceOriginal, ...generated } };
 }
 
 function stripYamlFrontmatter(markdown: string) {
@@ -459,12 +471,12 @@ async function generateCleanMetadata(
   signal?: AbortSignal
 ): Promise<unknown> {
   const characterRule = "\n\nOutput-quality rule: every JSON string must be valid Unicode text. Never emit replacement characters, mojibake, ASCII/control characters, question marks, or '(?)' in place of unreadable source text. If a metadata value cannot be transcribed with certainty, leave that scalar empty or omit that list item. Return the complete JSON object only.";
-  const first = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}`, signal);
+  const first = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}`, signal, metadataJsonSchema());
   if (!containsInvalidMetadataCharacter(first)) return first;
 
   // A fresh generation is more reliable than editing a damaged string, since
   // the replacement character has discarded the original letter.
-  const retry = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}\n\nYour previous response contained invalid characters. Regenerate the entire JSON object from the Markdown and obey the output-quality rule exactly.`, signal);
+  const retry = await llm.generateJsonObject<unknown>(`${prompt}${characterRule}\n\nYour previous response contained invalid characters. Regenerate the entire JSON object from the Markdown and obey the output-quality rule exactly.`, signal, metadataJsonSchema());
   if (!containsInvalidMetadataCharacter(retry)) return retry;
 
   // Preserve useful fields from the retry, but never save a field whose text

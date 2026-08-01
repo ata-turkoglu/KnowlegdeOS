@@ -1,4 +1,5 @@
 import type { ApiConfig } from '../config/env.js';
+import { metadataPromptFieldContract } from '@knowledgeos/shared';
 import { slugify } from '../lib/slug.js';
 import {
   ensureWorkspaceStorage,
@@ -8,6 +9,7 @@ import {
 
 const defaultWorkspaceSlug = 'merter-arsivi';
 const maximumPromptLength = 50_000;
+// Retained only to interpolate previously saved workspace prompt templates.
 const documentCodePlaceholder = '<document_code_system_value>';
 const sourceOriginalPlaceholder = '<source_original_system_value>';
 const documentContentPlaceholder = '<document content>';
@@ -50,20 +52,16 @@ Rules:
 - Never duplicate list items.
 - Normalize only JSON field structure and ISO date representation. Do not normalize, standardize, or rewrite source-derived names, places, identifiers, historical spelling, or document wording.
 
-document_code and source_original are system supplied. Copy them exactly; do not derive alternatives.
-document_code: "${documentCodePlaceholder}"
-source_original: "${sourceOriginalPlaceholder}"
+document_code and source_original are system supplied. Do not return them or any other system-managed field.
 
-Return one flat JSON object. Values may be strings, numbers, booleans, or flat arrays of those primitive values. Do not return nested objects. Use each key at most once and keep value types consistent across documents.
+Return one flat JSON object using only the built-in keys listed below. Values may be strings, numbers, booleans, or flat arrays of those primitive values. Do not return nested objects. Use each key at most once and keep value types consistent across documents.
 
 Required field types:
-- document_code, source_original, title, language, document_type, document_subtype, date, date_text, date_range_start, date_range_end, issuer, recipient, summary, and notes are scalar strings.
-- people, organizations, places, addresses, parcels, property_descriptions, case_numbers, notary_numbers, signatories, witnesses, and keywords are flat arrays of strings.
-- Never return date, date_text, date_range_start, or date_range_end as arrays.
+${metadataPromptFieldContract()}
 
-A key represents exactly one semantic concept: every item in one list must be one atomic instance of that same concept. Do not mix identifiers with their labels, people with relationship phrases, places with addresses, measurements with property descriptions, or any other unlike values in one field. When source facts belong to distinct concepts, use separate suitable fields (or a concise new snake_case field) rather than broad mixed lists. For an identifier, retain the source label when it distinguishes the identifier's kind; never emit both its labeled and bare-number forms.
+A key represents exactly one semantic concept: every item in one list must be one atomic instance of that same concept. Do not mix identifiers with their labels, people with relationship phrases, places with addresses, measurements with property descriptions, or any other unlike values in one field. When source facts belong to distinct concepts, use the appropriate built-in field rather than inventing a new key. For an identifier, retain the source label when it distinguishes the identifier's kind; never emit both its labeled and bare-number forms.
 
-Prefer these common keys when applicable: title, language, document_type, document_subtype, date, date_text, date_range_start, date_range_end, people, organizations, places, addresses, parcels, property_descriptions, case_numbers, notary_numbers, issuer, recipient, signatories, witnesses, keywords, summary, notes. You may create a concise snake_case key only for a genuinely different concept explicitly stated in the document.
+Use the registered built-in keys when applicable: title, language, document_type, document_subtype, date, date_text, date_range_start, date_range_end, people, organizations, places, addresses, parcels, property_descriptions, case_numbers, notary_numbers, issuer, recipient, signatories, witnesses, keywords, summary, notes. Do not create unknown keys.
 
 Markdown supplied for analysis:
 """${documentContentPlaceholder}"""`;

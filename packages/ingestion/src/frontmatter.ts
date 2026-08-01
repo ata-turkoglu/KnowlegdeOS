@@ -1,5 +1,7 @@
+import type { MetadataScalar, MetadataValue } from '@knowledgeos/shared';
+
 export type ParsedMarkdown = {
-  frontmatter: Record<string, string | string[]>;
+  frontmatter: Record<string, MetadataValue>;
   content: string;
 };
 
@@ -34,7 +36,7 @@ export function parseMarkdownFrontmatter(markdown: string): ParsedMarkdown {
 }
 
 function parseSimpleYaml(input: string) {
-  const result: Record<string, string | string[]> = {};
+  const result: Record<string, MetadataValue> = {};
   const lines = input.split("\n");
   let currentArrayKey: string | null = null;
 
@@ -47,8 +49,8 @@ function parseSimpleYaml(input: string) {
 
     if (currentArrayKey && trimmed.startsWith("- ")) {
       const existing = result[currentArrayKey];
-      const value = stripQuotes(trimmed.slice(2).trim());
-      result[currentArrayKey] = Array.isArray(existing) ? [...existing, value] : [value];
+      const value = parseScalar(trimmed.slice(2).trim());
+      result[currentArrayKey] = Array.isArray(existing) ? [...existing, value] : [existing, value];
       continue;
     }
 
@@ -74,12 +76,16 @@ function parseSimpleYaml(input: string) {
       continue;
     }
 
-    result[key] = stripQuotes(value);
+    result[key] = parseScalar(value);
   }
 
   return result;
 }
 
-function stripQuotes(value: string) {
-  return value.replace(/^["']|["']$/g, "");
+function parseScalar(value: string): MetadataScalar {
+  if (/^["']/.test(value)) return value.replace(/^["']|["']$/g, '');
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (/^-?(?:\d+|\d*\.\d+)$/.test(value)) return Number(value);
+  return value;
 }

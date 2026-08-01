@@ -4,6 +4,7 @@ import { readFile, readdir, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 import type { SavedMultipartFile } from "@fastify/multipart";
+import type { MetadataValue } from "@knowledgeos/shared";
 import { claims, createDatabaseClient, documentChunks, documentEntities, documentFieldValues, documents, entities as entityTable, propertyReferences, relationships, workspaceFields, workspaces } from "@knowledgeos/database";
 import { buildEntityExtractionPrompt, type LLMExtractionResult } from "@knowledgeos/ai";
 import { ingestMarkdown, normalizeForSearch, parseMarkdownFrontmatter, type ExtractedEntity, type IngestionResult } from "@knowledgeos/ingestion";
@@ -33,8 +34,8 @@ async function withDb<T>(config: ApiConfig, fn: (client: ReturnType<typeof creat
 async function ensureWorkspace(db: any, config: ApiConfig, slug: string) { const [found] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (found) return found; const paths = await ensureWorkspaceStorage(config.storageRoot, slug); const [created] = await db.insert(workspaces).values({ name: slug, slug, storagePath: paths.root }).onConflictDoNothing().returning(); if (created) return created; const [raced] = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1); if (!raced) throw new Error("Unable to create workspace."); return raced; }
 function uploaded(row: typeof documents.$inferSelect, slug: string): UploadedDocument { return { workspaceSlug: slug, documentName: nameOf(row.filename), filename: row.filename, title: row.title, hash: row.hash, markdownPath: row.markdownPath, sourceOriginalPath: row.sourceOriginalPath, metadataPath: "", status: "UPLOADED" }; }
 function listItem(row: typeof documents.$inferSelect, slug: string, chunks = 0, entityCount = 0): DocumentListItem { return { ...uploaded(row, slug), status: row.status === "INDEXED" ? "INDEXED" : "UPLOADED", indexedAt: row.indexedAt?.toISOString() ?? null, chunkCount: chunks, entityCount, hasLlmExtraction: Boolean(row.llmExtraction), llmExtractionError: row.llmExtractionError }; }
-function scalar(metadata: Record<string, string | string[]>, key: string) { const value = metadata[key]; return typeof value === "string" && value.trim() ? value.trim() : null; }
-function documentDate(metadata: Record<string, string | string[]>) {
+function scalar(metadata: Record<string, MetadataValue>, key: string) { const value = metadata[key]; return typeof value === "string" && value.trim() ? value.trim() : null; }
+function documentDate(metadata: Record<string, MetadataValue>) {
   const value = scalar(metadata, "date");
   return value ? canonicalizeDateValue(value) : null;
 }
@@ -42,14 +43,14 @@ function recoverFrontmatter(
   stored: unknown,
   rows: Array<{ type: string; value: string; confidence: number; evidenceSnippet: string }>
 ) {
-  const metadata = stored && typeof stored === "object" && !Array.isArray(stored) ? stored as Record<string, string | string[]> : {};
+  const metadata = stored && typeof stored === "object" && !Array.isArray(stored) ? stored as Record<string, MetadataValue> : {};
   if (Object.keys(metadata).length) return metadata;
   const keys: Record<string, string> = {
     PERSON: "people", PLACE: "places", PARCEL: "parcels", PROPERTY: "property_descriptions",
     ORGANIZATION: "organizations", DOCUMENT_TYPE: "document_type", DATE: "dates",
     CASE_NUMBER: "case_numbers", NOTARY_NUMBER: "notary_numbers", KEYWORD: "keywords"
   };
-  const recovered: Record<string, string | string[]> = {};
+  const recovered: Record<string, MetadataValue> = {};
   for (const row of rows) {
     if (row.confidence < 0.95 || !row.evidenceSnippet.startsWith("frontmatter:")) continue;
     const evidenceKey = row.evidenceSnippet.slice("frontmatter:".length);
@@ -213,7 +214,7 @@ export async function reindexStoredDocument(
     const markdown = await readFile(document.markdownPath, "utf8");
     const settings = await getWorkspaceIngestionSettings(config, slug);
     const storedMetadata = document.metadata && typeof document.metadata === "object" && !Array.isArray(document.metadata)
-      ? document.metadata as Record<string, string | string[]>
+      ? document.metadata as Record<string, MetadataValue>
       : {};
     const initialIngestion = ingestMarkdown(markdown, { targetWords: settings.chunkSize, overlapWords: settings.chunkOverlap }, storedMetadata);
     const initialQuality = inspectIngestionQuality(initialIngestion.chunks);

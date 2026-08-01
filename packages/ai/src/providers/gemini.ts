@@ -25,15 +25,15 @@ export class GeminiProvider implements LLMProvider {
     return JSON.parse(await this.request(prompt, signal, "application/json")) as T;
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    return this.generateJson<T>(prompt, signal);
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
+    return JSON.parse(await this.request(prompt, signal, "application/json", undefined, jsonSchema)) as T;
   }
 
-  private async request(prompt: string, signal?: AbortSignal, responseMimeType?: "application/json", maxOutputTokens?: number): Promise<string> {
+  private async request(prompt: string, signal?: AbortSignal, responseMimeType?: "application/json", maxOutputTokens?: number, responseSchema?: object): Promise<string> {
     const response = await fetch(`${baseUrl}/${this.model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { ...(responseMimeType ? { responseMimeType } : {}), ...(maxOutputTokens ? { maxOutputTokens } : {}), temperature: this.temperature } }), signal
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { ...(responseMimeType ? { responseMimeType } : {}), ...(responseSchema ? { responseSchema } : {}), ...(maxOutputTokens ? { maxOutputTokens } : {}), temperature: this.temperature } }), signal
     });
     if (!response.ok) throw new Error(`Gemini response failed with ${response.status}`);
     const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };

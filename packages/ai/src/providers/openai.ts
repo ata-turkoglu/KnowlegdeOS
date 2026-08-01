@@ -162,7 +162,7 @@ export class OpenAIProvider implements LLMProvider {
     return JSON.parse(outputText) as T;
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T> {
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
@@ -175,7 +175,7 @@ export class OpenAIProvider implements LLMProvider {
             type: "json_schema",
             name: "metadata",
             strict: false,
-            schema: { type: "object", additionalProperties: true }
+            schema: jsonSchema ?? { type: "object", additionalProperties: true }
           }
         }
       }),

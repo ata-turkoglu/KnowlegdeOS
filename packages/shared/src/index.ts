@@ -12,3 +12,4 @@ export type SourceSnippet = {
 
 export { chatWorkflowStages } from "./chat-workflow";
 export type { ChatProgress, ChatWorkflowStageId } from "./chat-workflow";
+export * from "./metadata-policy";

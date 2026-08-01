@@ -1599,7 +1599,7 @@ const convertNodes: WorkflowNode[] = [
     1560,
     100,
     'Load Metadata Context',
-    'Workspace prompt and field catalog',
+    'Registry-derived prompt and schema',
     'deterministic',
     'Çalışma alanının YAML promptu ve kayıtlı metadata alanları yüklenir. Sistem anahtarları modelin değiştirmesine kapalıdır.',
   ),

@@ -1,4 +1,4 @@
-import type { EntityType } from "@knowledgeos/shared";
+import type { EntityType, MetadataValue } from "@knowledgeos/shared";
 import { normalizeForSearch } from "./normalize.js";
 
 export type ExtractedEntity = {
@@ -24,7 +24,7 @@ export type ExtractedPropertyReference = {
 
 type ExtractionInput = {
   content: string;
-  frontmatter: Record<string, string | string[]>;
+  frontmatter: Record<string, MetadataValue>;
 };
 
 const extractionPatterns: Array<{
@@ -200,7 +200,7 @@ function cleanPersonCandidate(value: string) {
 
 function addFrontmatterEntities(
   entities: ExtractedEntity[],
-  frontmatter: Record<string, string | string[]>
+  frontmatter: Record<string, MetadataValue>
 ) {
   const mappings: Array<{ key: string; type: EntityType }> = [
     { key: "people", type: "PERSON" },
@@ -221,17 +221,18 @@ function addFrontmatterEntities(
     const values = Array.isArray(rawValue) ? rawValue : rawValue ? [rawValue] : [];
 
     for (const value of values) {
-      if (!value.trim()) {
+      const text = String(value).trim();
+      if (!text) {
         continue;
       }
-      const type = mapping.type === "PERSON" && looksInstitutionalPerson(value)
+      const type = mapping.type === "PERSON" && looksInstitutionalPerson(text)
         ? "ORGANIZATION"
         : mapping.type;
 
       entities.push({
         type,
-        value,
-        normalizedValue: normalizeForSearch(value),
+        value: text,
+        normalizedValue: normalizeForSearch(text),
         evidenceSnippet: `frontmatter:${mapping.key}`,
         confidence: 0.98,
         source: "FRONTMATTER"
@@ -260,8 +261,8 @@ function dedupeEntities(entities: ExtractedEntity[]) {
   return [...byKey.values()].sort((a, b) => a.type.localeCompare(b.type));
 }
 
-function metadataValues(value: string | string[] | undefined) {
-  return (Array.isArray(value) ? value : value ? [value] : []).map((item) => item.trim()).filter(Boolean);
+function metadataValues(value: MetadataValue | undefined) {
+  return (Array.isArray(value) ? value : value === undefined ? [] : [value]).map((item) => String(item).trim()).filter(Boolean);
 }
 
 function propertyEvidenceSegments(content: string) {

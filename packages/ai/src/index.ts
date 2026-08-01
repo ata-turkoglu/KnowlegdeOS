@@ -45,7 +45,7 @@ export interface LLMProvider {
   generate(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): Promise<string>;
   generateStream(input: GenerationInput, signal?: AbortSignal, options?: GenerationOptions): AsyncIterable<string>;
   generateJson<T>(prompt: string, signal?: AbortSignal): Promise<T>;
-  generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T>;
+  generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T>;
 }
 
 export interface EmbeddingProvider {

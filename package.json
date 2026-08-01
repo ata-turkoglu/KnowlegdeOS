@@ -14,6 +14,7 @@
     "test:rag": "corepack pnpm --filter @knowledgeos/api exec tsx --test test/rag/*.test.ts",
     "docs:generate": "node apps/api/node_modules/tsx/dist/cli.mjs scripts/generate-chat-workflow-doc.ts",
     "docs:check": "node apps/api/node_modules/tsx/dist/cli.mjs scripts/generate-chat-workflow-doc.ts --check",
+    "metadata:audit": "node apps/api/node_modules/tsx/dist/cli.mjs scripts/audit-metadata.ts",
     "verify": "corepack pnpm docs:check && corepack pnpm typecheck && corepack pnpm build && corepack pnpm test"
   },
   "devDependencies": {

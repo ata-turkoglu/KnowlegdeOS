@@ -80,8 +80,12 @@ export class AnthropicProvider implements LLMProvider {
     return this.json<T>(prompt, signal);
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    return this.json<T>(prompt, signal);
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
+    // Messages has no portable JSON-schema response mode. Runtime validation
+    // remains authoritative; include the contract so this provider receives
+    // the same explicit shape request as schema-capable providers.
+    const schemaInstruction = jsonSchema ? `\nJSON Schema contract: ${JSON.stringify(jsonSchema)}` : '';
+    return this.json<T>(`${prompt}${schemaInstruction}`, signal);
   }
 
   private async json<T>(prompt: string, signal?: AbortSignal) {

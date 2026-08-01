@@ -6,6 +6,7 @@ import { HttpError } from "../lib/http-errors.js";
 import { slugify } from "../lib/slug.js";
 import { backups, createDatabaseClient, documents, workspaces } from "@knowledgeos/database";
 import { and, eq } from "drizzle-orm";
+import type { MetadataValue } from '@knowledgeos/shared';
 import { parseMarkdownFrontmatter } from "@knowledgeos/ingestion";
 import {
   ensureWorkspaceStorage,
@@ -205,7 +206,7 @@ export async function listWorkspaceBackups(config: ApiConfig, workspaceSlugInput
   }
 }
 
-function metadataText(frontmatter: Record<string, string | string[]>, key: string) {
+function metadataText(frontmatter: Record<string, MetadataValue>, key: string) {
   const value = frontmatter[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }

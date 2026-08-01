@@ -14,3 +14,8 @@ test("frontmatter parser accepts LF, CRLF, and a UTF-8 BOM", () => {
     });
   }
 });
+
+test("frontmatter parser preserves primitive YAML types", () => {
+  const parsed = parseMarkdownFrontmatter("---\namount: 12.5\nverified: true\nlabels:\n  - \"A\"\n  - 2\n---\n\nBody");
+  assert.deepEqual(parsed.frontmatter, { amount: 12.5, verified: true, labels: ["A", 2] });
+});

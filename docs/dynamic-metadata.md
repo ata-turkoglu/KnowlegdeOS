@@ -39,3 +39,12 @@ GET /api/workspaces/:workspaceSlug/fields
 
 Database migration `0008_dynamic_metadata_fields.sql` intentionally replaces
 the fixed entity tables. Deploy it only with the planned database reset.
+# Metadata policy contract
+
+Built-in YAML metadata fields are defined once in `packages/shared/src/metadata-policy.ts`. Conversion validates provider output against that registry, retains chunk provenance, resolves scalar candidates deterministically, and unions only registered list fields. `date` and `date_text` are resolved as one scalar pair. Unknown LLM fields are rejected; legacy `organization` is accepted only as an alias of `organizations`.
+
+Use `corepack pnpm metadata:audit --root=converted-markdown` before a regeneration. It is read-only unless an explicit `--output=<report.json>` path is supplied.
+
+For a controlled workspace, first regenerate YAML from the Convert screen (or its YAML batch action), inspect the resulting trace files when `METADATA_DIAGNOSTICS_ENABLED=true`, then start that workspace's reindex operation. Do not run a production-wide regeneration until the audit report and a controlled reindex have been reviewed. The existing reindex endpoint is `POST /api/settings/ingestion/:workspaceSlug/reindex` with `{ "useLlm": false }` for YAML-only ingestion; use `{ "useLlm": true }` only when the optional indexing-time extractor is deliberately required. Roll back a YAML regeneration by restoring the prior Markdown files from backup, then reindex the restored workspace.
+
+`12.06.1974 tarihli belgeler` is a document-date query and receives the canonical `date = 1974-06-12` metadata filter. `12.06.1974 tarihinde ne olmuştu?` is intentionally an event/content-date question: it keeps hybrid content retrieval and does not incorrectly restrict results to documents authored on that date.

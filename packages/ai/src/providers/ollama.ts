@@ -54,11 +54,12 @@ export class OllamaProvider implements LLMProvider {
     return JSON.parse(extractJson(text)) as T;
   }
 
-  async generateJsonObject<T>(prompt: string, signal?: AbortSignal): Promise<T> {
-    return this.generateJson<T>(prompt, signal);
+  async generateJsonObject<T>(prompt: string, signal?: AbortSignal, jsonSchema?: object): Promise<T> {
+    const text = await readGeneratedText(await this.request(prompt, signal, jsonSchema ?? "json"));
+    return JSON.parse(extractJson(text)) as T;
   }
 
-  private async request(prompt: string, signal?: AbortSignal, format?: "json", maxTokens?: number): Promise<Response> {
+  private async request(prompt: string, signal?: AbortSignal, format?: "json" | object, maxTokens?: number): Promise<Response> {
     const response = await fetch(`${this.baseUrl}/api/generate`, {
       method: "POST",
       headers: {

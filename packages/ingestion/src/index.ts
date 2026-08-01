@@ -2,6 +2,7 @@ import { chunkMarkdown } from "./chunk.js";
 import { deterministicExtract, extractPropertyReferences } from "./extract.js";
 import { parseMarkdownFrontmatter } from "./frontmatter.js";
 import { normalizeForSearch, normalizeText } from "./normalize.js";
+import type { MetadataValue } from '@knowledgeos/shared';
 
 export type IngestionStage =
   | "upload"
@@ -28,7 +29,7 @@ export { parseMarkdownFrontmatter, type ParsedMarkdown } from "./frontmatter.js"
 export { normalizeForSearch, normalizeText } from "./normalize.js";
 
 export type IngestionResult = {
-  frontmatter: Record<string, string | string[]>;
+  frontmatter: Record<string, MetadataValue>;
   content: string;
   normalizedContent: string;
   chunks: import("./chunk.js").DocumentChunk[];
@@ -36,7 +37,7 @@ export type IngestionResult = {
   propertyReferences: import("./extract.js").ExtractedPropertyReference[];
 };
 
-export function ingestMarkdown(markdown: string, chunkOptions?: import("./chunk.js").ChunkOptions, fallbackFrontmatter: Record<string, string | string[]> = {}): IngestionResult {
+export function ingestMarkdown(markdown: string, chunkOptions?: import("./chunk.js").ChunkOptions, fallbackFrontmatter: Record<string, MetadataValue> = {}): IngestionResult {
   const parsed = parseMarkdownFrontmatter(normalizeText(markdown));
   const frontmatter = Object.keys(parsed.frontmatter).length ? parsed.frontmatter : fallbackFrontmatter;
   const chunks = chunkMarkdown(parsed.content, chunkOptions);
